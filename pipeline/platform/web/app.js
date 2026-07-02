@@ -303,6 +303,22 @@ function codefragHelp() {
   ]);
 }
 
+// Справочник официальных классов ПО (сворачиваемый), с источником и датой сверки.
+function classesReference(ref) {
+  if (!ref || !Array.isArray(ref.classes) || !ref.classes.length) return null;
+  const rows = ref.classes.map((c) => el("tr", {}, [
+    el("td", { class: "mono", style: "width:1%;white-space:nowrap" }, c.code),
+    el("td", {}, c.name),
+  ]));
+  return help("📚 Классификатор ПО — официальные классы (СВЕРИТЬ подкласс)", [
+    el("div", { class: "muted", style: "margin-bottom:6px", html:
+      `Источник: <b>${esc(ref.source || "—")}</b>. Сверено: ${esc(ref.verifiedAt || "—")}. ` +
+      "Ниже — верхнеуровневые классы. Точный <b>подкласс</b> (например 05.09) и его формулировку " +
+      "сверьте на <span class='mono'>reestr.digital.gov.ru</span> перед подачей." }),
+    el("table", {}, [el("tr", {}, [el("th", {}, "Код"), el("th", {}, "Класс")]), ...rows]),
+  ]);
+}
+
 // ---------- дашборд ----------
 async function viewDashboard() {
   const { products } = await api.get("/api/products");
@@ -339,6 +355,8 @@ async function createProduct() {
 // ---------- карточка продукта ----------
 async function viewProduct(id) {
   const { product } = await api.get(`/api/products/${id}`);
+  // Справочник классов ПО (официальный классификатор). Не критичен — при ошибке просто нет автоподсказок.
+  const classesRef = await api.get("/api/reference/classes").catch(() => null);
   const p = product.product || {};
   const rh = product.rightholder || {};
   const f = product.finance || {};
@@ -352,7 +370,7 @@ async function viewProduct(id) {
     ["product.deliveryType", "Модель поставки", "select:SaaS,on-prem,hybrid"],
     ["product.guiLanguage", "Язык интерфейса", "select:ru,en"],
     ["product.productPageUrl", "URL страницы продукта", "text"],
-    ["product.class", "Класс(ы) ПО", "multi:Прикладное ПО общего назначения|Офисные приложения|Системы управления базами данных|Управление процессами организации (ERP/CRM/BPM)|Средства обеспечения информационной безопасности|Серверное и связующее ПО|Средства разработки ПО|Отраслевые информационные системы", "СВЕРИТЬ точный код по классификатору ПП № 1236"],
+    ["product.class", "Класс(ы) ПО", "classpicker", "выберите класс из официального списка · подкласс СВЕРИТЬ"],
     ["product.description", "Описание функциональных характеристик", "textarea"],
     ["product.purpose", "Назначение / область применения", "textarea"],
     ["rightholder.orgName", "Правообладатель", "text"],
@@ -394,6 +412,16 @@ async function viewProduct(id) {
       const opts = type.slice(9).split("|");
       extra = el("datalist", { id: listId }, opts.map((o) => el("option", { value: o })));
       input = el("input", { type: "text", "data-path": pathStr, "data-list": "1", list: listId,
+        value: Array.isArray(cur) ? cur.join(", ") : (cur || "") });
+    } else if (type === "classpicker") {
+      // Официальный классификатор: подсказка «код — название», в поле сохраняется код.
+      // Несколько классов — через запятую. Подкласс (NN.NN) вписывается вручную.
+      const listId = "dl-class";
+      const list = (classesRef && classesRef.classes) || [];
+      extra = el("datalist", { id: listId }, list.map((c) =>
+        el("option", { value: c.code }, `${c.code} — ${c.name}`)));
+      input = el("input", { type: "text", "data-path": pathStr, "data-list": "1", list: listId,
+        placeholder: "напр. 05 или 05.09 — начните вводить код",
         value: Array.isArray(cur) ? cur.join(", ") : (cur || "") });
     } else if (type.startsWith("multi:")) {
       // Мультивыбор: чекбоксы по вариантам + поле «другое» для значений вне списка.
@@ -555,6 +583,7 @@ async function viewProduct(id) {
           if (confirm("Удалить продукт со всеми данными?")) { await api.del(`/api/products/${id}`); location.hash = "#/"; }
         } }, "Удалить"),
       ]),
+      classesReference(classesRef),
     ]),
     prepWizard(),
     el("div", { class: "panel" }, [
