@@ -5,6 +5,7 @@
 
 const store = require("./store");
 const tracker = require("./tracker");
+const { cardCompleteness } = require("./readiness");
 
 function val(x, dash = "—") { return (x === undefined || x === null || x === "") ? dash : x; }
 function joinList(a) { return Array.isArray(a) ? a.join(", ") : val(a); }
@@ -93,14 +94,47 @@ function buildSubmission(id) {
   ];
 
   const t = tracker.buildTracker(id);
+  const completeness = cardCompleteness(p);
+  const nextActions = buildNextActions(id, p, completeness, t, artifacts, report);
+
   return {
     productId: id,
     productName: pr.name || id,
     fields,
     attachments,
     steps,
+    completeness,
+    nextActions,
     readiness: { percent: t.percent, checksOverall: t.checksOverall },
   };
+}
+
+// Единый список «что осталось за человеком»: незаполненные поля карточки,
+// отсутствующие артефакты и невыполненные ручные пункты трекера (авто-G3 —
+// не действие человека, исключаем). kind → к какой вкладке ведёт действие.
+function buildNextActions(id, product, completeness, t, artifacts, report) {
+  const actions = [];
+
+  completeness.missing.forEach((m) => {
+    actions.push({ kind: "card", area: m.section, text: `Заполнить: ${m.label}`, hash: `#/p/${id}` });
+  });
+
+  const hasArtifact = (hint) => artifacts.some((a) => a.name.toLowerCase().includes(hint));
+  if (!hasArtifact("sbom") && !hasArtifact("cyclonedx") && !hasArtifact("bom"))
+    actions.push({ kind: "artifact", area: "Проверки", text: "Загрузить SBOM (состав ПО)", hash: `#/p/${id}` });
+  if (!hasArtifact(".har") && !hasArtifact("network"))
+    actions.push({ kind: "artifact", area: "Проверки", text: "Снять и загрузить HAR (сетевой трафик)", hash: `#/p/${id}` });
+  if (!report)
+    actions.push({ kind: "checks", area: "Проверки", text: "Запустить технические проверки", hash: `#/p/${id}/checks` });
+
+  // Невыполненные ручные пункты трекера (без авто-гейтов).
+  t.gates.filter((g) => !g.auto).forEach((g) => {
+    g.items.filter((it) => !it.done).forEach((it) => {
+      actions.push({ kind: "tracker", area: `${g.id} ${g.title}`, text: it.text, hash: `#/p/${id}/tracker` });
+    });
+  });
+
+  return actions;
 }
 
 module.exports = { buildSubmission, complianceText };

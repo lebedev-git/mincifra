@@ -742,6 +742,39 @@ async function viewSubmit(id) {
     "Готовые значения для формы карточки ПО на <span class='mono'>reestr.digital.gov.ru</span>. " +
     "Копируй по полям и вставляй в портал. Значения с «СВЕРИТЬ» проверь перед подачей." }));
 
+  // --- Что осталось за вами (агрегированный список действий человека) ---
+  const acts = S.nextActions || [];
+  const cmp = S.completeness || { percent: 0, filled: 0, total: 0 };
+  if (acts.length) {
+    // Группировка по area с сохранением порядка появления.
+    const groups = [];
+    const byArea = {};
+    acts.forEach((a) => {
+      if (!byArea[a.area]) { byArea[a.area] = []; groups.push(a.area); }
+      byArea[a.area].push(a);
+    });
+    const groupNodes = groups.map((area) => el("div", { style: "margin:6px 0" }, [
+      el("div", { class: "mono", style: "font-weight:600;margin-bottom:2px" }, area),
+      el("ul", { style: "margin:2px 0" }, byArea[area].map((a) =>
+        el("li", { style: "margin:2px 0" }, [
+          el("a", { href: a.hash }, a.text),
+        ]))),
+    ]));
+    app.append(el("div", { class: "panel", style: "border-left:4px solid var(--blue)" }, [
+      el("div", { class: "row", style: "align-items:center" }, [
+        el("h2", { style: "flex:1;margin:0" }, `Что осталось за вами (${acts.length})`),
+        el("span", { class: "muted" }, `Карточка: ${cmp.filled}/${cmp.total} полей`),
+      ]),
+      el("div", { class: "muted", style: "font-size:12px;margin:4px 0 8px" },
+        "Единый список действий: заполнить поля, загрузить артефакты, отметить ручные пункты. Клик — переход к нужной вкладке."),
+      ...groupNodes,
+    ]));
+  } else {
+    app.append(el("div", { class: "panel", style: "border-left:4px solid var(--pass, #2e7d32)" }, [
+      el("div", { html: "✅ <b>Все отслеживаемые пункты закрыты.</b> Сверьте значения с «СВЕРИТЬ» и подавайте." }),
+    ]));
+  }
+
   // --- Поля для портала ---
   const copyBtn = (text) => el("button", { class: "ghost", onclick: async () => {
     const ok = await copy(text); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);

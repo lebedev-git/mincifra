@@ -13,6 +13,7 @@ const foreignPayments = require("./lib/foreign_payments");
 const licenseScan = require("./lib/license_scan");
 const networkAudit = require("./lib/network_audit");
 const pageCheck = require("./lib/page_check");
+const requisites = require("./lib/requisites");
 
 const STATUS_ICON = { PASS: "✅", WARN: "🟡", FAIL: "⛔", SKIP: "⚪" };
 
@@ -23,6 +24,7 @@ function runAllChecks(product, baseDir) {
     licenseScan.run(product, baseDir),
     networkAudit.run(product, baseDir),
     pageCheck.run(product),
+    requisites.run(product),
   ];
   const totals = { PASS: 0, WARN: 0, FAIL: 0, SKIP: 0 };
   results.forEach((r) => { totals[r.status] = (totals[r.status] || 0) + 1; });
