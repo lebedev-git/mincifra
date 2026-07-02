@@ -357,6 +357,8 @@ async function viewProduct(id) {
   const { product } = await api.get(`/api/products/${id}`);
   // Справочник классов ПО (официальный классификатор). Не критичен — при ошибке просто нет автоподсказок.
   const classesRef = await api.get("/api/reference/classes").catch(() => null);
+  // Доступно ли автозаполнение по ИНН (DaData). Без ключа на сервере — кнопки нет.
+  const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
   const p = product.product || {};
   const rh = product.rightholder || {};
   const f = product.finance || {};
@@ -444,11 +446,37 @@ async function viewProduct(id) {
       input = el("input", { type: type === "number" ? "number" : "text", "data-path": pathStr,
         value: cur == null ? "" : cur });
     }
+    // Кнопка автозаполнения по ИНН (только если DaData настроена на сервере).
+    if (pathStr === "rightholder.inn" && egrulStatus && egrulStatus.enabled) {
+      extra = el("button", { class: "ghost", type: "button", style: "margin-top:4px",
+        onclick: (ev) => egrulFill(ev.target) }, "Заполнить по ИНН");
+    }
     const spanKids = [el("span", {}, label)];
     if (hint) spanKids.push(el("span", { class: "tag" }, hint));
     return el("label", { class: "field", style: labelStyle },
       [el("span", { style: "display:block;margin-bottom:4px" }, spanKids), input, extra]);
   }));
+
+  // Автозаполнение реквизитов по ИНН: тянет из DaData и подставляет в поля формы.
+  // Данные — черновик; человек проверяет и жмёт «Сохранить». Адрес пишем прямо в
+  // объект product (в форме отдельного поля адреса нет), он сохранится вместе с карточкой.
+  async function egrulFill(btn) {
+    const innInp = app.querySelector('[data-path="rightholder.inn"]');
+    const inn = (innInp && innInp.value || "").trim();
+    if (!inn) { toast("Сначала введите ИНН", true); return; }
+    const t0 = btn.textContent; btn.disabled = true; btn.textContent = "…";
+    try {
+      const { data } = await api.post("/api/egrul/lookup", { inn });
+      const setField = (path, v) => { const n = app.querySelector(`[data-path="${path}"]`); if (n && v) n.value = v; };
+      setField("rightholder.orgName", data.orgName);
+      setField("rightholder.ogrn", data.ogrn);
+      if (data.address) { product.rightholder = product.rightholder || {}; product.rightholder.address = data.address; }
+      const st = data.status && data.status !== "ACTIVE" ? ` · статус: ${data.status}` : "";
+      toast(`Реквизиты подставлены — проверьте и сохраните${st}`);
+    } catch (e) {
+      toast(e.message || "Не удалось получить данные", true);
+    } finally { btn.disabled = false; btn.textContent = t0; }
+  }
 
   async function save() {
     app.querySelectorAll("[data-path]").forEach((inp) => {

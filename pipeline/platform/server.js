@@ -26,6 +26,7 @@ const router = new Router();
   require("./api/tracker"),
   require("./api/submission"),
   require("./api/reference"),
+  require("./api/egrul"),
 ].forEach((m) => m.register(router));
 
 // --- Отдача статики (web/) ---
