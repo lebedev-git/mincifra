@@ -38,9 +38,18 @@ async function lookupByInn(innRaw) {
     clearTimeout(timer);
   }
 
-  if (res.status === 401 || res.status === 403) throw httpError(502, "DaData отклонила ключ (проверьте DADATA_TOKEN).");
-  if (res.status === 429) throw httpError(502, "Превышен лимит запросов к DaData — повторите позже.");
-  if (!res.ok) throw httpError(502, `DaData вернула ошибку ${res.status}.`);
+  if (!res.ok) {
+    // Пробрасываем сообщение DaData — оно указывает точную причину
+    // (например: функция «Подсказки»/SUGGESTIONS не включена для ключа).
+    let detail = "";
+    try { const j = await res.json(); detail = j && (j.message || j.reason) ? ` — ${j.message || j.reason}` : ""; }
+    catch (_) { /* тело не JSON */ }
+    if (res.status === 401 || res.status === 403)
+      throw httpError(502, `DaData отклонила запрос (проверьте ключ и что включена функция «Подсказки»)${detail}`);
+    if (res.status === 429)
+      throw httpError(502, `Превышен лимит запросов к DaData — повторите позже${detail}`);
+    throw httpError(502, `DaData вернула ошибку ${res.status}${detail}`);
+  }
 
   let data;
   try { data = await res.json(); }
