@@ -1,0 +1,26 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "metadata": {
+    "component": { "type": "application", "name": "skladpro", "version": "1.0" }
+  },
+  "components": [
+    { "type": "library", "name": "express", "version": "4.19.2",
+      "licenses": [ { "license": { "id": "MIT" } } ] },
+    { "type": "library", "name": "pg", "version": "8.11.5",
+      "licenses": [ { "license": { "id": "MIT" } } ] },
+    { "type": "library", "name": "lodash", "version": "4.17.21",
+      "licenses": [ { "license": { "id": "MIT" } } ] },
+    { "type": "library", "name": "chart-lib", "version": "2.3.0",
+      "licenses": [ { "license": { "id": "Apache-2.0" } } ] },
+    { "type": "library", "name": "some-copyleft-ui", "version": "1.2.0",
+      "licenses": [ { "license": { "id": "GPL-3.0-only" } } ] },
+    { "type": "library", "name": "saas-db-driver", "version": "0.9.1",
+      "licenses": [ { "license": { "id": "AGPL-3.0-or-later" } } ] },
+    { "type": "library", "name": "legacy-util", "version": "0.1.0",
+      "licenses": [ { "license": { "id": "LGPL-2.1-only" } } ] },
+    { "type": "library", "name": "mystery-pkg", "version": "3.0.0",
+      "licenses": [ { "license": { "name": "Custom-Proprietary" } } ] },
+    { "type": "library", "name": "no-license-pkg", "version": "0.0.3" }
+  ]
+}

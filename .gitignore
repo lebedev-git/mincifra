@@ -1,0 +1,19 @@
+# Зависимости
+node_modules/
+
+# Рантайм-хранилище платформы (карточки, артефакты, отчёты, досье)
+pipeline/platform/data/
+
+# Сгенерированные артефакты пайплайна
+pipeline/03_docs/out/
+pipeline/02_checks/last_report.md
+
+# Инструментальные каталоги
+.playwright-mcp/
+_docx/
+_extract/
+
+# ОС/редакторы
+Thumbs.db
+.DS_Store
+*.log

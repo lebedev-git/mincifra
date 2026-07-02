@@ -1,0 +1,13 @@
+{
+  "name": "reestr-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Локальная платформа подготовки ПО к Единому реестру российского ПО (Минцифры)",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
