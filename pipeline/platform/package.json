@@ -7,6 +7,14 @@
   "scripts": {
     "start": "node server.js"
   },
+  "peerDependencies": {
+    "docx": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "docx": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=18"
   }

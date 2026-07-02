@@ -5,8 +5,47 @@
 // генератор аналитической записки.
 
 const path = require("path");
-const GP = "C:\\Users\\Andrey\\AppData\\Roaming\\npm\\node_modules";
-const docx = require(path.join(GP, "docx"));
+const docx = resolveDocx();
+
+// Находит модуль docx без хардкода пути пользователя. Порядок:
+//   1) обычный require («docx» рядом/в node_modules/NODE_PATH) — локальная установка;
+//   2) вычисленные глобальные npm root по окружению (Windows: %APPDATA%\npm; Unix: рядом с node);
+//   3) `npm root -g` как крайний фолбэк;
+//   4) понятная ошибка с инструкцией по установке.
+function resolveDocx() {
+  try { return require("docx"); } catch (_) { /* пробуем глобально */ }
+
+  const { createRequire } = require("module");
+  const candidates = [];
+  if (process.env.APPDATA) candidates.push(path.join(process.env.APPDATA, "npm", "node_modules"));
+  if (process.env.npm_config_prefix) candidates.push(path.join(process.env.npm_config_prefix, "node_modules"));
+  // Unix-раскладка: <prefix>/bin/node → <prefix>/lib/node_modules
+  candidates.push(path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules"));
+  candidates.push(path.resolve(path.dirname(process.execPath), "node_modules"));
+
+  for (const root of candidates) {
+    try {
+      const req = createRequire(path.join(root, "index.js"));
+      return req("docx");
+    } catch (_) { /* следующий кандидат */ }
+  }
+
+  // Крайний фолбэк — спросить у npm его глобальный root (медленнее, требует npm в PATH).
+  try {
+    const root = require("child_process")
+      .execSync("npm root -g", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      .trim();
+    if (root) {
+      const req = require("module").createRequire(path.join(root, "index.js"));
+      return req("docx");
+    }
+  } catch (_) { /* не нашли */ }
+
+  throw new Error(
+    "Не найден модуль «docx». Установите его глобально:  npm install -g docx\n" +
+    "или локально в каталоге платформы:  npm install docx"
+  );
+}
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, LevelFormat, HeadingLevel,
@@ -112,8 +151,8 @@ function titleBlock(title, subtitle, meta) {
   return out;
 }
 
-// Сборка и запись .docx. children — массив параграфов/таблиц.
-function build(children, { title, header, outPath }) {
+// Сборка .docx в Buffer (без записи на диск). children — массив параграфов/таблиц.
+function buildBuffer(children, { title, header } = {}) {
   const doc = new Document({
     creator: "Пайплайн реестра ПО",
     title: title || "Документ",
@@ -166,13 +205,17 @@ function build(children, { title, header, outPath }) {
       children,
     }],
   });
-  return Packer.toBuffer(doc).then((buf) => {
-    require("fs").writeFileSync(outPath, buf);
-    return { outPath, bytes: buf.length };
-  });
+  return Packer.toBuffer(doc);
+}
+
+// Сборка и запись .docx на диск. Переиспользует buildBuffer.
+async function build(children, { title, header, outPath }) {
+  const buf = await buildBuffer(children, { title, header });
+  require("fs").writeFileSync(outPath, buf);
+  return { outPath, bytes: buf.length };
 }
 
 module.exports = {
   docx, H1, H2, H3, P, bullet, num, R, B, sp, pageBreak, note, tbl,
-  titleBlock, build, FONT, BLUE,
+  titleBlock, build, buildBuffer, FONT, BLUE,
 };

@@ -6,10 +6,6 @@
 const store = require("./store");
 const tracker = require("./tracker");
 
-function fmtMoney(n) {
-  const v = Number(n);
-  return Number.isFinite(v) ? new Intl.NumberFormat("ru-RU").format(v) : "—";
-}
 function val(x, dash = "—") { return (x === undefined || x === null || x === "") ? dash : x; }
 function joinList(a) { return Array.isArray(a) ? a.join(", ") : val(a); }
 

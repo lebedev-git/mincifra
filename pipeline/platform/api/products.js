@@ -9,10 +9,22 @@ const { readJsonBody, sendJson } = require("../core/http-util");
 
 const TEMPLATE_PATH = path.resolve(__dirname, "../../product.example.json");
 
+// Рекурсивно убирает служебные ключи-подсказки шаблона (*_note, *_options,
+// $schema_note), чтобы они не сохранялись в карточку продукта и не засоряли данные.
+// Код (UI, генерация, проверки) на эти ключи не опирается.
+function stripHelperKeys(obj) {
+  if (Array.isArray(obj)) { obj.forEach(stripHelperKeys); return obj; }
+  if (obj && typeof obj === "object") {
+    for (const k of Object.keys(obj)) {
+      if (/(_note|_options)$/.test(k) || k === "$schema_note") delete obj[k];
+      else stripHelperKeys(obj[k]);
+    }
+  }
+  return obj;
+}
+
 function loadTemplate() {
-  const raw = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf8"));
-  delete raw.$schema_note;
-  return raw;
+  return stripHelperKeys(JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf8")));
 }
 
 // Краткая сводка по продукту для дашборда.

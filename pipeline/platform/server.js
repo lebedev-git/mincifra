@@ -32,8 +32,11 @@ function serveStatic(req, res, pathname) {
   let rel = decodeURIComponent(pathname);
   if (rel === "/" || rel === "") rel = "/index.html";
   const file = path.join(WEB_DIR, path.normalize(rel));
-  // Защита от выхода за пределы web/
-  if (!file.startsWith(WEB_DIR)) { sendError(res, errWithStatus(403, "Запрещено")); return; }
+  // Защита от выхода за пределы web/. Разделитель обязателен, иначе соседний
+  // каталог-«сосед» (напр. web-backup) прошёл бы проверку по префиксу.
+  if (file !== WEB_DIR && !file.startsWith(WEB_DIR + path.sep)) {
+    sendError(res, errWithStatus(403, "Запрещено")); return;
+  }
   if (fs.existsSync(file) && fs.statSync(file).isFile()) { sendFile(res, file); return; }
   // SPA-фолбэк: неизвестный не-API путь → index.html
   sendFile(res, path.join(WEB_DIR, "index.html"));

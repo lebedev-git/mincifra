@@ -11,7 +11,7 @@
 // ВНИМАНИЕ: правовые формулировки — шаблонные каркасы, проверяет юрист правообладателя.
 
 const H = require("./lib/docx_helpers");
-const { H1, P, bullet, num, R, B, sp, pageBreak, note, tbl, titleBlock, build } = H;
+const { H1, P, bullet, num, R, B, sp, pageBreak, note, tbl, titleBlock, buildBuffer } = H;
 
 function today() {
   const d = new Date();
@@ -161,18 +161,14 @@ function listDeponDocs() {
 }
 
 // Генерация одного документа в Buffer. Возвращает { fileName, buffer } — сохранение
-// (в data-слой) делает вызывающий адаптер. tmpPath используется только для сборки.
+// (в data-слой) делает вызывающий адаптер. Сборка идёт целиком в памяти.
 async function buildDeponDoc(kind, product, ctx = {}) {
   const def = listDeponDocs().find((d) => d.kind === kind);
   if (!def) throw new Error(`Неизвестный документ депонирования: ${kind}`);
   const short = safeFileName((product.product && product.product.shortName) || "product");
   const fileName = `${def.file}_${short}.docx`;
   const children = def.make(product, ctx);
-  const os = require("os"), path = require("path"), fs = require("fs");
-  const tmp = path.join(os.tmpdir(), `depon_${kind}_${Date.now()}.docx`);
-  await build(children, { title: def.title, header: `${def.title} · ${short}`, outPath: tmp });
-  const buffer = fs.readFileSync(tmp);
-  fs.rmSync(tmp, { force: true });
+  const buffer = await buildBuffer(children, { title: def.title, header: `${def.title} · ${short}` });
   return { fileName, buffer, title: def.title };
 }
 
