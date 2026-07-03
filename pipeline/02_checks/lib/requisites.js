@@ -14,7 +14,25 @@ function innLegalValid(inn) {
   return ctrl === Number(inn[9]);
 }
 
-// --- Контрольная сумма ОГРН (13 цифр): первые 12 как число mod 11, mod 10 == 13-я. ---
+// --- Контрольная сумма ИНН физлица/ИП/самозанятого (12 цифр). Два контрольных разряда. ---
+function innPersonValid(inn) {
+  if (!/^\d{12}$/.test(inn)) return false;
+  const w11 = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8];
+  const w12 = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8];
+  let s1 = 0;
+  for (let i = 0; i < 10; i++) s1 += w11[i] * Number(inn[i]);
+  if ((s1 % 11) % 10 !== Number(inn[10])) return false;
+  let s2 = 0;
+  for (let i = 0; i < 11; i++) s2 += w12[i] * Number(inn[i]);
+  return (s2 % 11) % 10 === Number(inn[11]);
+}
+
+// --- ИНН правообладателя: юрлицо (10) ИЛИ физлицо/ИП (12). ---
+function innValid(inn) {
+  return /^\d{12}$/.test(inn) ? innPersonValid(inn) : innLegalValid(inn);
+}
+
+// --- Контрольная сумма ОГРН юрлица (13 цифр): первые 12 как число mod 11, mod 10 == 13-я. ---
 function ogrnValid(ogrn) {
   if (!/^\d{13}$/.test(ogrn)) return false;
   const head = ogrn.slice(0, 12);
@@ -23,6 +41,21 @@ function ogrnValid(ogrn) {
   for (const ch of head) rem = (rem * 10 + Number(ch)) % 11;
   const ctrl = (rem % 10);
   return ctrl === Number(ogrn[12]);
+}
+
+// --- Контрольная сумма ОГРНИП (15 цифр): первые 14 как число mod 13, mod 10 == 15-я. ---
+function ogrnipValid(ogrnip) {
+  if (!/^\d{15}$/.test(ogrnip)) return false;
+  const head = ogrnip.slice(0, 14);
+  let rem = 0;
+  for (const ch of head) rem = (rem * 10 + Number(ch)) % 13;
+  const ctrl = (rem % 10);
+  return ctrl === Number(ogrnip[14]);
+}
+
+// --- ОГРН правообладателя: юрлицо (13) ИЛИ ИП (15). ---
+function ogrnAnyValid(v) {
+  return /^\d{15}$/.test(v) ? ogrnipValid(v) : ogrnValid(v);
 }
 
 // --- Дата в формате ГГГГ-ММ-ДД и реально существующая. ---
@@ -45,18 +78,22 @@ function run(product) {
   const inn = rh.inn != null ? String(rh.inn).trim() : "";
   if (!inn) {
     findings.push({ severity: "SKIP", field: "rightholder.inn", note: "не заполнен" });
-  } else if (!innLegalValid(inn)) {
+  } else if (!innValid(inn)) {
     findings.push({ severity: "FAIL", field: "rightholder.inn",
-      note: /^\d{10}$/.test(inn) ? "неверная контрольная цифра ИНН" : "ИНН юрлица — 10 цифр" });
+      note: /^\d{10}$|^\d{12}$/.test(inn)
+        ? "неверная контрольная цифра ИНН"
+        : "ИНН должен содержать 10 цифр (юрлицо) или 12 цифр (физлицо/ИП)" });
   }
 
   // ОГРН
   const ogrn = rh.ogrn != null ? String(rh.ogrn).trim() : "";
   if (!ogrn) {
     findings.push({ severity: "SKIP", field: "rightholder.ogrn", note: "не заполнен" });
-  } else if (!ogrnValid(ogrn)) {
+  } else if (!ogrnAnyValid(ogrn)) {
     findings.push({ severity: "FAIL", field: "rightholder.ogrn",
-      note: /^\d{13}$/.test(ogrn) ? "неверная контрольная цифра ОГРН" : "ОГРН — 13 цифр" });
+      note: /^\d{13}$|^\d{15}$/.test(ogrn)
+        ? "неверная контрольная цифра ОГРН/ОГРНИП"
+        : "ОГРН — 13 цифр (юрлицо) или ОГРНИП — 15 цифр (ИП)" });
   }
 
   // Доля РФ-контроля
@@ -99,4 +136,7 @@ function run(product) {
   return { id, title, status, summary, findings };
 }
 
-module.exports = { run, innLegalValid, ogrnValid, isoDateValid };
+module.exports = {
+  run, innLegalValid, innPersonValid, innValid,
+  ogrnValid, ogrnipValid, ogrnAnyValid, isoDateValid,
+};
