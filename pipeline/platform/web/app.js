@@ -46,18 +46,107 @@ function crumbs(items) {
   return el("div", { class: "crumbs", html: items.map((i) =>
     i.href ? `<a href="${esc(i.href)}">${esc(i.text)}</a>` : esc(i.text)).join(" / ") });
 }
-function tabs(id, active) {
-  const items = [
-    { k: "", t: "Карточка" }, { k: "/checks", t: "Проверки" },
-    { k: "/tracker", t: "Трекер" }, { k: "/docs", t: "Документы" },
-    { k: "/submit", t: "Отправка" },
-  ];
-  return el("div", { class: "row", style: "margin-bottom:14px;gap:8px" },
-    items.map((it) => {
-      const href = `#/p/${id}${it.k}`;
-      const cls = "btn" + (active === it.k ? "" : " ghost");
-      return el("a", { class: cls, href }, it.t);
-    }));
+
+// ---------- маршрут подготовки (степпер) ----------
+// Единый порядок работы с продуктом: Карточка → Проверки → Трекер → Документы → Отправка.
+// Статус каждого шага считается из уже существующих данных (readiness/tracker/dossier) —
+// никакой новой бизнес-логики, только визуализация того, что уже посчитано на сервере.
+const STEPS = [
+  { key: "", label: "Карточка", num: "1" },
+  { key: "/checks", label: "Проверки", num: "2" },
+  { key: "/tracker", label: "Трекер (гейты)", num: "3" },
+  { key: "/docs", label: "Документы", num: "4" },
+  { key: "/submit", label: "Отправка", num: "5" },
+];
+const STEP_ICON = { done: "✅", blocked: "⛔", active: "🟡", todo: "🔲" };
+
+// Подтягивает всё, что нужно степперу, тремя параллельными запросами. Ошибка одного
+// запроса не валит остальные — просто соответствующий шаг покажется как "🔲 не начат".
+async function loadStepMeta(id) {
+  const [trackerRes, readinessRes, docsRes] = await Promise.all([
+    api.get(`/api/products/${id}/tracker`).catch(() => null),
+    api.get(`/api/products/${id}/readiness`).catch(() => null),
+    api.get(`/api/products/${id}/dossier`).catch(() => null),
+  ]);
+  return {
+    tracker: trackerRes && trackerRes.tracker,
+    readiness: readinessRes && readinessRes.readiness,
+    docsCount: (docsRes && docsRes.docs && docsRes.docs.length) || 0,
+  };
+}
+
+// Статус конкретного шага: todo (🔲 не начат) · active (🟡 в работе) · done (✅ готово) ·
+// blocked (⛔ есть FAIL). Логика — тонкая обёртка над данными, которые уже считает бэкенд.
+function stepStatus(key, meta) {
+  if (!meta) return "todo";
+  if (key === "") {
+    const r = meta.readiness;
+    if (!r) return "todo";
+    if (r.complete) return "done";
+    return r.filled > 0 ? "active" : "todo";
+  }
+  if (key === "/checks") {
+    const t = meta.tracker;
+    if (!t || !t.hasReport) return "todo";
+    if (t.checksOverall === "FAIL") return "blocked";
+    if (t.checksOverall === "PASS") return "done";
+    return "active"; // WARN / смешанный со SKIP
+  }
+  if (key === "/tracker") {
+    const t = meta.tracker;
+    if (!t) return "todo";
+    if (t.percent >= 100) return "done";
+    return t.percent > 0 ? "active" : "todo";
+  }
+  if (key === "/docs") return meta.docsCount > 0 ? "done" : "todo";
+  if (key === "/submit") {
+    const t = meta.tracker;
+    if (!t) return "todo";
+    if (t.percent >= 100) return "done";
+    return t.percent > 0 ? "active" : "todo";
+  }
+  return "todo";
+}
+
+// Степпер-навигация вместо вкладок: видно весь маршрут G0–G5 сразу, текущий шаг
+// подсвечен, статус каждого — из реальных данных продукта (не декоративный).
+function stepper(id, activeKey, meta) {
+  const nodes = [];
+  STEPS.forEach((s, i) => {
+    if (i > 0) {
+      const prevStatus = stepStatus(STEPS[i - 1].key, meta);
+      nodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
+    }
+    const status = stepStatus(s.key, meta);
+    const isCurrent = activeKey === s.key;
+    const href = `#/p/${id}${s.key}`;
+    const circle = el("a", { href, class: "step-circle " + status + (isCurrent ? " current" : ""),
+      title: s.label + " — " + { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status] },
+      STEP_ICON[status] === "🔲" ? s.num : STEP_ICON[status]);
+    const label = el("a", { href, class: "step-label" + (isCurrent ? " current" : "") }, s.label);
+    nodes.push(el("div", { class: "step" }, [circle, label]));
+  });
+  return el("div", { class: "stepper" }, nodes);
+}
+
+// Кнопка «Далее» — ведёт по маршруту вперёд. Не блокирует переход намертво (гейты
+// G0/G1/G2/G4/G5 зависят от внешних документов/портала и могут готовиться неделями
+// параллельно с техподготовкой), но переспрашивает, если текущий шаг ещё не закрыт.
+function nextStepNav(id, activeKey, meta) {
+  const idx = STEPS.findIndex((s) => s.key === activeKey);
+  if (idx < 0 || idx >= STEPS.length - 1) return null;
+  const cur = STEPS[idx], nxt = STEPS[idx + 1];
+  const goto = () => {
+    const curStatus = stepStatus(cur.key, meta);
+    if (curStatus !== "done") {
+      const ok = confirm(`Шаг «${cur.label}» ещё не завершён (${STEP_ICON[curStatus]}). Перейти к «${nxt.label}» всё равно?`);
+      if (!ok) return;
+    }
+    location.hash = `#/p/${id}${nxt.key}`;
+  };
+  return el("div", { class: "row", style: "justify-content:flex-end;margin:4px 0 16px" }, [
+    el("button", { onclick: goto }, `Далее: ${nxt.label} →`),
+  ]);
 }
 
 // Сворачиваемый блок-инструкция: <details class="help"> с заголовком и телом.
@@ -444,6 +533,16 @@ function classMultiPicker(pathStr, list, curArr) {
   return wrap;
 }
 
+// Грубая оценка «на каком шаге маршрута сейчас продукт» без доп. запросов — только
+// по сводке, которую уже отдаёт /api/products (percent из трекера, статус проверок).
+// Точный расчёт (с учётом полноты карточки) — на самой странице продукта (stepStatus).
+function dashboardStage(p) {
+  if (p.checksOverall === "FAIL") return { key: "blocked", text: "⛔ Есть блокеры в проверках" };
+  if (!p.hasReport) return { key: "todo", text: "🔲 Шаг 1–2: карточка и проверки" };
+  if (p.percent < 100) return { key: "active", text: "🟡 Шаг 3: трекер гейтов" };
+  return { key: "done", text: "✅ Готово к отправке" };
+}
+
 // ---------- дашборд ----------
 async function viewDashboard() {
   const { products } = await api.get("/api/products");
@@ -453,11 +552,13 @@ async function viewDashboard() {
   ]);
 
   const grid = el("div", { class: "grid" }, products.map((p) => {
+    const stage = dashboardStage(p);
     const card = el("div", { class: "card", onclick: () => (location.hash = `#/p/${p.id}`) }, [
       el("div", { class: "name" }, p.name),
       el("div", { class: "meta" }, `${p.shortName || "—"} · ${p.deliveryType || "—"}`),
       progressBar(p.percent),
       el("div", { class: "meta", html: `Готовность: <b>${p.percent}%</b> · Проверки: ${badge(p.checksOverall)}` }),
+      el("div", { class: "step-tag " + stage.key }, stage.text),
     ]);
     return card;
   }));
@@ -482,6 +583,7 @@ async function viewProduct(id) {
   const { product } = await api.get(`/api/products/${id}`);
   // Справочник классов ПО (официальный классификатор). Не критичен — при ошибке просто нет автоподсказок.
   const classesRef = await api.get("/api/reference/classes").catch(() => null);
+  const stepMeta = await loadStepMeta(id);
   // Доступно ли автозаполнение по ИНН (DaData). Без ключа на сервере — кнопки нет.
   const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
   // Доступны ли git/npx на этом ПК — определяет режим «Мастера подготовки».
@@ -775,7 +877,7 @@ async function viewProduct(id) {
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: p.name || id }]),
-    tabs(id, ""),
+    stepper(id, "", stepMeta),
     el("div", { class: "panel" }, [
       el("h2", {}, "Карточка продукта"),
       form,
@@ -815,6 +917,7 @@ async function viewProduct(id) {
       el("h2", {}, "Ключевые условия входа в реестр"),
       conditionsHelp(),
     ]),
+    nextStepNav(id, "", stepMeta),
   );
 }
 
@@ -823,9 +926,10 @@ async function viewChecks(id) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { report } = await api.get(`/api/products/${id}/report`);
+  const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]), tabs(id, "/checks"));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]), stepper(id, "/checks", stepMeta));
 
   const runBtn = el("button", { onclick: run }, "▶ Запустить проверки");
   const panel = el("div", { class: "panel" }, [
@@ -837,6 +941,7 @@ async function viewChecks(id) {
     el("div", { id: "checks-body" }),
   ]);
   app.append(panel);
+  app.append(nextStepNav(id, "/checks", stepMeta));
   renderReport(report);
 
   async function run() {
@@ -882,9 +987,10 @@ async function viewTracker(id) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { tracker } = await api.get(`/api/products/${id}/tracker`);
+  const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]), tabs(id, "/tracker"));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]), stepper(id, "/tracker", stepMeta));
 
   const overall = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center", html:
@@ -917,6 +1023,7 @@ async function viewTracker(id) {
 
   if (!tracker.hasReport) app.append(el("div", { class: "hint" },
     "Гейт G3 заполнится после запуска проверок на вкладке «Проверки»."));
+  app.append(nextStepNav(id, "/tracker", stepMeta));
 }
 
 // ---------- документы ----------
@@ -924,9 +1031,10 @@ async function viewDocs(id) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { docs } = await api.get(`/api/products/${id}/dossier`);
+  const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]), tabs(id, "/docs"));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]), stepper(id, "/docs", stepMeta));
 
   const genBtn = el("button", { onclick: gen }, "📄 Сгенерировать досье");
   const list = el("div", { id: "docs-list" });
@@ -956,17 +1064,19 @@ async function viewDocs(id) {
     ]));
     list.append(el("table", {}, [el("tr", {}, [el("th", {}, "Файл"), el("th", {}, "Размер")]), ...rows]));
   }
+  app.append(nextStepNav(id, "/docs", stepMeta));
 }
 
 // ---------- отправка (монтажный лист подачи) ----------
 async function viewSubmit(id) {
   const { submission } = await api.get(`/api/products/${id}/submission`);
   const S = submission;
+  const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: S.productName, href: `#/p/${id}` }, { text: "Отправка" }]),
-    tabs(id, "/submit"),
+    stepper(id, "/submit", stepMeta),
   );
 
   app.append(el("div", { class: "hint", html:

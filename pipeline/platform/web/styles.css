@@ -57,6 +57,34 @@ header.topbar nav a { color: #fff; font-size: 13px; }
 .row { display: flex; gap: 16px; flex-wrap: wrap; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 
+/* Степпер маршрута продукта: Карточка → Проверки → Трекер → Документы → Отправка.
+   Заменяет вкладки — видно весь маршрут сразу, статус каждого шага не декоративный,
+   а посчитан из реальных данных (readiness/tracker/dossier), см. app.js:stepStatus. */
+.stepper { display: flex; align-items: flex-start; margin-bottom: 18px; padding: 4px 0; }
+.stepper .step { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 96px; flex-shrink: 0; }
+.stepper .step-line { flex: 1 1 auto; height: 2px; background: var(--line); margin-top: 17px; min-width: 8px; }
+.stepper .step-line.filled { background: var(--blue-2); }
+.step-circle {
+  display: flex; align-items: center; justify-content: center; width: 34px; height: 34px;
+  border-radius: 50%; border: 2px solid var(--line); background: #fff; color: var(--muted);
+  font-weight: 700; font-size: 13px; text-decoration: none; flex-shrink: 0;
+}
+.step-circle:hover { text-decoration: none; border-color: var(--blue-2); }
+.step-circle.todo { border-color: var(--line); color: var(--muted); }
+.step-circle.active { border-color: var(--warn); color: var(--warn); background: #fffaf0; }
+.step-circle.done { border-color: var(--pass); background: var(--pass); color: #fff; }
+.step-circle.blocked { border-color: var(--fail); background: var(--fail); color: #fff; }
+.step-circle.current { box-shadow: 0 0 0 3px rgba(31, 78, 121, .22); }
+.step-label { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.25; }
+.step-label.current { color: var(--blue); font-weight: 700; }
+
+/* Бейдж стадии на карточке продукта (дашборд) */
+.step-tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-top: 6px; }
+.step-tag.todo { background: #eef1f4; color: var(--muted); }
+.step-tag.active { background: #fff6df; color: var(--warn); }
+.step-tag.done { background: #e8f5e9; color: var(--pass); }
+.step-tag.blocked { background: #fdecea; color: var(--fail); }
+
 .card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   padding: 16px; cursor: pointer; transition: box-shadow .15s, border-color .15s;

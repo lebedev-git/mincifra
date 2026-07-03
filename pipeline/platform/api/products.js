@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const store = require("../core/store");
 const tracker = require("../core/tracker");
+const { cardCompleteness } = require("../core/readiness");
 const { readJsonBody, sendJson } = require("../core/http-util");
 
 const TEMPLATE_PATH = path.resolve(__dirname, "../../product.example.json");
@@ -102,6 +103,13 @@ function register(router) {
   router.get("/api/products/:id", (req, res) => {
     const product = store.getProduct(req.params.id);
     sendJson(res, 200, { id: req.params.id, product });
+  });
+
+  // Полнота карточки (какие обязательные поля ещё не заполнены) — питает шаг-индикатор в UI.
+  // Не дублирует бизнес-логику: только читает уже существующий readiness.cardCompleteness.
+  router.get("/api/products/:id/readiness", (req, res) => {
+    const product = store.getProduct(req.params.id);
+    sendJson(res, 200, { readiness: cardCompleteness(product) });
   });
 
   router.put("/api/products/:id", async (req, res) => {
