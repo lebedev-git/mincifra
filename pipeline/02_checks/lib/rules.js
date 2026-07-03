@@ -89,7 +89,8 @@ const LICENSE_RISK = {
     label: "Низкий (permissive)",
     action: "Допустимо. Соблюдать атрибуцию (NOTICE); для Apache-2.0 учесть патентную оговорку",
     spdx: ["MIT", "BSD-2-Clause", "BSD-3-Clause", "APACHE-2.0", "ISC", "ZLIB",
-           "0BSD", "UNLICENSE", "CC0-1.0", "PYTHON-2.0", "WTFPL"],
+           "0BSD", "UNLICENSE", "CC0-1.0", "PYTHON-2.0", "WTFPL",
+           "BlueOak-1.0.0", "CC-BY-4.0"],
   },
 };
 
