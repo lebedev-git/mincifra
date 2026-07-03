@@ -118,6 +118,57 @@ function docChain(pr) {
   return c;
 }
 
+// ---------- Фрагмент исходного кода (до 70 страниц) ----------
+// По правилу Роспатента депонируется не весь код, а реферат + фрагмент листинга
+// объёмом не более 70 страниц. Если строк много — берём первые 35 и последние 35
+// страниц. ctx.listing — собранный текст исходников (из авто-подготовки).
+const LINES_PER_PAGE = 45;   // ориентировочно строк моноширинного текста на A4
+const MAX_PAGES = 70;
+const HALF_PAGES = 35;
+
+function docCodeFragment(pr, ctx = {}) {
+  const p = pr.product || {}, rh = pr.rightholder || {};
+  const c = [];
+  c.push(...titleBlock("ФРАГМЕНТ ИСХОДНОГО КОДА", p.name || "____",
+    [`Правообладатель: ${rh.orgName || "____"}`, `Дата: ${today()}`]));
+  c.push(pageBreak());
+
+  const raw = String(ctx.listing || "");
+  if (!raw.trim()) {
+    c.push(P([R("Листинг исходного кода не найден. Сначала выполните "), B("«Подготовить автоматически»"),
+      R(" в Мастере подготовки — платформа соберёт снимок кода и листинг, после чего фрагмент сформируется автоматически.")]));
+    return c;
+  }
+
+  const allLines = raw.replace(/\t/g, "    ").split(/\r?\n/);
+  const totalPages = Math.ceil(allLines.length / LINES_PER_PAGE);
+  let lines, truncated = false;
+  if (totalPages <= MAX_PAGES) {
+    lines = allLines;
+  } else {
+    // Первые 35 страниц + маркер + последние 35 страниц.
+    const head = allLines.slice(0, HALF_PAGES * LINES_PER_PAGE);
+    const tail = allLines.slice(allLines.length - HALF_PAGES * LINES_PER_PAGE);
+    lines = [...head, "", "/* … середина листинга опущена (правило ≤ 70 страниц Роспатента) … */", "", ...tail];
+    truncated = true;
+  }
+
+  c.push(note("Объём фрагмента", [
+    truncated
+      ? [R(`Исходный листинг — ~${totalPages} стр. Включены первые ${HALF_PAGES} и последние ${HALF_PAGES} страниц (итого ≤ ${MAX_PAGES}).`)]
+      : [R(`Листинг включён целиком (~${totalPages} стр., в пределах ${MAX_PAGES} страниц).`)],
+  ]));
+  c.push(sp(120));
+
+  // Моноширинный код построчно. Разбиваем на блоки, чтобы не создавать один гигантский параграф.
+  const mono = (text) => new H.docx.Paragraph({
+    spacing: { after: 0, line: 200 },
+    children: [new H.docx.TextRun({ text: text || " ", font: "Consolas", size: 16 })],
+  });
+  lines.forEach((ln) => c.push(mono(ln)));
+  return c;
+}
+
 // ---------- Заявление в Роспатент (форма ДоЭВМ) ----------
 function docStatement(pr) {
   const p = pr.product || {}, rh = pr.rightholder || {}, r = pr.rights || {};
@@ -157,6 +208,7 @@ function listDeponDocs() {
     { kind: "dep_snapshot", title: "Акт фиксации версии", file: "Акт_фиксации_версии", make: docSnapshotAct, needsArchive: true },
     { kind: "dep_chain", title: "Цепочка прав", file: "Цепочка_прав", make: docChain },
     { kind: "dep_statement", title: "Заявление в Роспатент", file: "Заявление_Роспатент", make: docStatement },
+    { kind: "dep_codefrag", title: "Фрагмент исходного кода", file: "Фрагмент_кода", make: docCodeFragment, needsListing: true },
   ];
 }
 

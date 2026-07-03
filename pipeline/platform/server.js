@@ -27,6 +27,8 @@ const router = new Router();
   require("./api/submission"),
   require("./api/reference"),
   require("./api/egrul"),
+  require("./api/profile"),
+  require("./api/prepare"),
 ].forEach((m) => m.register(router));
 
 // --- Отдача статики (web/) ---

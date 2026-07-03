@@ -9,6 +9,7 @@ const app = document.getElementById("app");
 const routes = [
   { rx: /^#?\/?$/, view: viewDashboard },
   { rx: /^#\/about$/, view: viewAbout },
+  { rx: /^#\/profile$/, view: viewProfile },
   { rx: /^#\/p\/([^/]+)\/checks$/, view: (m) => viewChecks(m[1]) },
   { rx: /^#\/p\/([^/]+)\/tracker$/, view: (m) => viewTracker(m[1]) },
   { rx: /^#\/p\/([^/]+)\/docs$/, view: (m) => viewDocs(m[1]) },
@@ -106,23 +107,6 @@ function detectOS() {
 function runCmd(os) {
   return os === "win" ? "powershell -ExecutionPolicy Bypass -File .\\prepare.ps1" : "bash prepare.sh";
 }
-// Отдельные команды подготовки (для тех, кто идёт по шагам вручную).
-function prepSteps(os, repo) {
-  const R = repo || "<ССЫЛКА_НА_РЕПОЗИТОРИЙ>";
-  if (os === "win") return [
-    ["Склонировать репозиторий", `git clone --depth 1 ${R} src`],
-    ["Чистый снимок версии (ZIP, без node_modules/.git)", "git -C src archive --format=zip -o snapshot.zip HEAD"],
-    ["Отпечаток SHA-256 (значение впишется в акт)", "certutil -hashfile snapshot.zip SHA256"],
-    ["SBOM — список библиотек и лицензий", "npx --yes @cyclonedx/cdxgen@latest -o sbom.json src"],
-  ];
-  const hash = os === "mac" ? "shasum -a 256 snapshot.zip" : "sha256sum snapshot.zip";
-  return [
-    ["Склонировать репозиторий", `git clone --depth 1 ${R} src`],
-    ["Чистый снимок версии (ZIP, без node_modules/.git)", "git -C src archive --format=zip -o snapshot.zip HEAD"],
-    ["Отпечаток SHA-256 (значение впишется в акт)", hash],
-    ["SBOM — список библиотек и лицензий", "npx --yes @cyclonedx/cdxgen@latest -o sbom.json src"],
-  ];
-}
 // Полный скрипт «сделать всё сам»: клон → снимок → SHA-256 → SBOM в папку registry-artifacts.
 function prepScript(os, repo) {
   const R = repo || "<ССЫЛКА_НА_РЕПОЗИТОРИЙ>";
@@ -180,71 +164,157 @@ function prepScript(os, repo) {
   ].join("\n");
 }
 
-// Мастер подготовки: ссылка на репозиторий + ОС → скрипт «всё сам» и/или команды по шагам.
-function prepWizard() {
-  const state = { repo: "", os: detectOS() };
-  const out = el("div", { style: "margin-top:12px" });
+// Мастер подготовки. ОСНОВНОЙ путь — локальный источник кода (папка на этом ПК или
+// ZIP): платформа делает снимок + SHA-256 + SBOM И заполняет карточку черновиком (из
+// package.json/README + ваших заметок; при заданном ключе — с LLM-улучшением). Сеть не
+// нужна — это убирает «падение» на тяжёлых репозиториях. Сетевой git-путь и скачивание
+// скрипта оставлены как запасные (сворачиваемые) варианты.
+// prepState — { git, npx, llm } из /api/prepare/status; onDraft(draft,result) применяет
+// черновик к полям карточки (передаётся из viewProduct).
+function prepWizard(id, prepState, onDraft) {
+  const state = { mode: "path", path: "", notes: "", zipFile: null, repo: "", os: detectOS() };
+  const canServer = !!(prepState && prepState.git);
+  const llmOn = !!(prepState && prepState.llm);
+  const progress = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" });
 
+  // --- Основной путь: локальный источник ---
+  const pathInp = el("input", { type: "text", value: "",
+    placeholder: "C:\\путь\\к\\папке\\проекта   (или D:/code/my-app)" });
+  pathInp.addEventListener("input", () => { state.path = pathInp.value.trim(); });
+
+  const zipInp = el("input", { type: "file", accept: ".zip" });
+  zipInp.addEventListener("change", () => { state.zipFile = (zipInp.files && zipInp.files[0]) || null; });
+
+  const notesInp = el("textarea", { placeholder:
+    "Коротко о продукте и о вас: что делает, для кого, кто правообладатель. Чем подробнее — тем точнее черновик.",
+    style: "width:100%;min-height:64px" });
+  notesInp.addEventListener("input", () => { state.notes = notesInp.value; });
+
+  // Переключатель источника: папка / ZIP.
+  const pathRow = el("label", { class: "field" }, [
+    el("span", { style: "display:block;margin-bottom:4px" }, "Путь к папке проекта на этом ПК"), pathInp]);
+  const zipRow = el("label", { class: "field", style: "display:none" }, [
+    el("span", { style: "display:block;margin-bottom:4px" }, "ZIP-архив проекта"), zipInp]);
+  const modeSel = el("select", {}, [
+    el("option", { value: "path", selected: "selected" }, "Папка на этом ПК"),
+    el("option", { value: "zip" }, "Загрузить ZIP"),
+  ]);
+  modeSel.addEventListener("change", () => {
+    state.mode = modeSel.value;
+    pathRow.style.display = state.mode === "path" ? "" : "none";
+    zipRow.style.display = state.mode === "zip" ? "" : "none";
+  });
+
+  async function runLocal(btn) {
+    if (state.mode === "path" && !state.path) { toast("Укажите путь к папке проекта", true); return; }
+    if (state.mode === "zip" && !state.zipFile) { toast("Выберите ZIP-архив проекта", true); return; }
+    const t0 = btn.textContent; btn.disabled = true; btn.textContent = "Заполняю…";
+    progress.textContent = "Читаю проект, делаю снимок и SHA-256, заполняю карточку черновиком…";
+    try {
+      let resp;
+      if (state.mode === "zip") {
+        const buf = await state.zipFile.arrayBuffer();
+        resp = await api.request("POST",
+          `/api/products/${id}/autofill?notes=${encodeURIComponent(state.notes)}`, buf, true);
+      } else {
+        resp = await api.post(`/api/products/${id}/autofill`, { path: state.path, notes: state.notes });
+      }
+      const { result, draft } = resp;
+      if (onDraft) onDraft(draft, result);
+      const bits = [];
+      if (result.archive) bits.push(`снимок готов (SHA-256 ${(result.sha256 || "").slice(0, 12)}…)`);
+      if (result.sbom) bits.push("SBOM собран");
+      toast("Карточка заполнена черновиком — проверьте и «Сохранить»" + (bits.length ? " · " + bits.join(", ") : ""));
+      (result.warnings || []).forEach((w) => toast(w, true));
+      progress.textContent = "Готово. Проверьте поля выше и нажмите «Сохранить». Снимок/листинг уже в артефактах.";
+    } catch (e) {
+      progress.textContent = "";
+      toast(e.message || "Не удалось заполнить", true);
+    } finally { btn.disabled = false; btn.textContent = t0; }
+  }
+
+  const fillBtn = el("button", { onclick: () => runLocal(fillBtn) }, "✨ Заполнить карточку из проекта");
+
+  const statusHint = prepState
+    ? el("div", { class: "hint", html:
+        "Код берётся с этого ПК — сеть не нужна, тяжёлые репозитории не срываются. " +
+        (prepState.npx ? "SBOM будет собран (npx доступен). " : "SBOM будет пропущен: нет npx (Node.js). ") +
+        (llmOn ? "LLM-улучшение описания включено." : "LLM выключен — используется ваш текст как есть (офлайн).") })
+    : el("div", { class: "hint muted" }, "Статус инструментов не получен.");
+
+  // --- Запасной путь 1: сетевой git по ссылке ---
   const repoInp = el("input", { type: "text", value: "",
     placeholder: "https://github.com/ваша-компания/ваш-продукт.git" });
-  repoInp.addEventListener("input", () => { state.repo = repoInp.value.trim(); render(); });
-
-  const osSel = el("select", {}, Object.entries(OS_CFG).map(([k, c]) =>
-    el("option", { value: k, ...(k === state.os ? { selected: "selected" } : {}) }, c.label)));
-  osSel.addEventListener("change", () => { state.os = osSel.value; render(); });
-
-  function render() {
-    const cfg = OS_CFG[state.os];
-    const script = prepScript(state.os, state.repo);
-    out.innerHTML = "";
-
-    const dlBtn = el("button", { onclick: () => {
-      if (!state.repo) { toast("Сначала вставьте ссылку на репозиторий", true); return; }
-      downloadText(cfg.file, script); toast(`Скрипт ${cfg.file} скачан`);
-    } }, `⬇ Скачать скрипт (${cfg.file})`);
-
-    const stepsRows = prepSteps(state.os, state.repo).map(([label, cmd], i) =>
-      el("div", { style: "margin:8px 0" }, [
-        el("div", { class: "mono", style: "margin-bottom:2px" }, `${i + 1}. ${label}`),
-        cmdBlock(cmd),
-      ]));
-
-    out.append(
-      el("div", { class: "row", style: "align-items:center;gap:10px;margin-bottom:6px" }, [
-        dlBtn,
-        el("span", { class: "muted", style: "font-size:12px" }, cfg.run),
-      ]),
-      cmdBlock(runCmd(state.os)),
-      el("div", { class: "hint", html:
-        "После запуска в папке <span class='mono'>registry-artifacts</span> появятся: " +
-        "<b>sbom.json</b> (→ загрузить как SBOM ниже), <b>snapshot.zip</b> (→ «Снимок версии кода»), " +
-        "<b>sha256.txt</b> (отпечаток для акта). Затем нажмите «Сгенерировать» у акта фиксации." }),
-      help("🧰 Нет git или Node.js? / Показать команды по шагам", [
-        el("div", { html:
-          "Скрипт использует два инструмента (обычно уже есть у разработчика):" }),
-        el("ul", { html:
-          "<li><b>Git</b> — <a href='https://git-scm.com/downloads' target='_blank' rel='noopener'>git-scm.com/downloads</a></li>" +
-          "<li><b>Node.js</b> (даёт команду <span class='mono'>npx</span>) — " +
-          "<a href='https://nodejs.org/' target='_blank' rel='noopener'>nodejs.org</a></li>" }),
-        el("div", { class: "muted", style: "margin-top:8px" },
-          "Если не хотите запускать скрипт — выполните эти команды по очереди в пустой папке:"),
-        ...stepsRows,
-      ]),
-    );
+  repoInp.addEventListener("input", () => { state.repo = repoInp.value.trim(); });
+  async function runServer(btn) {
+    if (!state.repo) { toast("Вставьте ссылку на репозиторий", true); return; }
+    const t0 = btn.textContent; btn.disabled = true; btn.textContent = "Подготовка…";
+    progress.textContent = "Клонирую репозиторий, делаю снимок, считаю SHA-256 и собираю SBOM…";
+    try {
+      const { result } = await api.post(`/api/products/${id}/prepare`, { repo: state.repo });
+      const bits = [`снимок готов (SHA-256 ${result.sha256.slice(0, 12)}…)`];
+      if (result.sbom) bits.push("SBOM собран");
+      toast("Готово: " + bits.join(", "));
+      (result.warnings || []).forEach((w) => toast(w, true));
+      progress.textContent = "Готово. Снимок/листинг в артефактах.";
+    } catch (e) {
+      progress.textContent = "";
+      toast(e.message || "Не удалось выполнить подготовку", true);
+    } finally { btn.disabled = false; btn.textContent = t0; }
   }
-  render();
+  const runBtn = el("button", { class: "ghost", onclick: () => runServer(runBtn) }, "⚙ Клонировать по ссылке");
+  if (!canServer) { runBtn.disabled = true; runBtn.title = "На этом ПК не найден git"; }
+  function gitBlock() {
+    return help("🌐 Запасной вариант: клонировать по ссылке (нужна сеть и git)", [
+      el("div", { class: "muted", style: "margin-bottom:6px" },
+        "Если проекта нет на этом ПК — платформа склонирует его по ссылке. На больших репозиториях " +
+        "клонирование может срываться; тогда используйте локальную папку или ZIP выше."),
+      el("label", { class: "field" }, [
+        el("span", { style: "display:block;margin-bottom:4px" }, "Ссылка на репозиторий (Git)"), repoInp]),
+      el("div", { class: "row", style: "margin-top:6px" }, [runBtn]),
+    ]);
+  }
+
+  // --- Запасной путь 2: скачать скрипт под ОС ---
+  function scriptBlock() {
+    const cfg = OS_CFG[state.os];
+    const osSel = el("select", {}, Object.entries(OS_CFG).map(([k, c]) =>
+      el("option", { value: k, ...(k === state.os ? { selected: "selected" } : {}) }, c.label)));
+    const dlBtn = el("button", { class: "ghost", onclick: () => {
+      const r = state.repo || state.path;
+      if (!r) { toast("Укажите ссылку или путь выше", true); return; }
+      downloadText(OS_CFG[state.os].file, prepScript(state.os, state.repo));
+      toast(`Скрипт ${OS_CFG[state.os].file} скачан`);
+    } }, "⬇ Скачать скрипт");
+    osSel.addEventListener("change", () => { state.os = osSel.value; });
+    return help("💾 Запасной вариант: скачать скрипт и запустить самому", [
+      el("div", { class: "muted", style: "margin-bottom:6px" },
+        "Для машин без прав/без git: скачайте скрипт под вашу ОС и запустите его в пустой папке."),
+      el("div", { class: "row", style: "gap:8px;align-items:center" }, [osSel, dlBtn]),
+      el("div", { class: "muted", style: "font-size:12px;margin-top:6px" }, cfg.run),
+      cmdBlock(runCmd(state.os)),
+    ]);
+  }
 
   return el("div", { class: "panel" }, [
-    el("h2", {}, "🧙 Мастер подготовки — собрать файлы автоматически"),
-    el("div", { class: "hint", html:
-      "Вставьте ссылку на репозиторий и выберите вашу систему — платформа даст готовый скрипт " +
-      "и точные команды под вашу ОС. Скрипт сам склонирует код, сделает чистый снимок версии, " +
-      "посчитает SHA-256 и соберёт SBOM." }),
-    el("div", { class: "two-col" }, [
-      el("label", { class: "field" }, [el("span", { style: "display:block;margin-bottom:4px" }, "Ссылка на репозиторий (Git)"), repoInp]),
-      el("label", { class: "field" }, [el("span", { style: "display:block;margin-bottom:4px" }, "Ваша операционная система"), osSel]),
+    el("h2", {}, "🧙 Мастер подготовки — заполнить карточку и собрать файлы"),
+    statusHint,
+    el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" }, "Источник кода"), modeSel]),
+    pathRow, zipRow,
+    el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" }, "Коротко о продукте / о себе"), notesInp]),
+    el("div", { class: "row", style: "align-items:center;gap:10px;margin:6px 0" }, [
+      fillBtn,
+      el("span", { class: "muted", style: "font-size:12px" },
+        "Заполнит поля черновиком (проверьте и Сохранить) и создаст снимок + SBOM в артефактах."),
     ]),
-    out,
+    progress,
+    el("div", { class: "hint", html:
+      "Значения — <b>черновик</b>: проверьте и при необходимости поправьте перед сохранением. " +
+      "Реквизиты правообладателя берутся из профиля; коды классов и юридические поля сверяет человек." }),
+    gitBlock(),
+    scriptBlock(),
   ]);
 }
 
@@ -319,6 +389,60 @@ function classesReference(ref) {
   ]);
 }
 
+// Виджет выбора класса(ов) ПО. Совместим с механизмом сохранения data-multi:
+// выбранные коды хранятся как скрытые checked-чекбоксы внутри контейнера, поэтому
+// save() соберёт их так же, как обычный мультивыбор. UI — чипы + select + подкласс.
+function classMultiPicker(pathStr, list, curArr) {
+  const wrap = el("div", { class: "multi classmulti", "data-path": pathStr, "data-multi": "1" });
+  const chips = el("div", { class: "chips" });
+  const selected = curArr.slice();
+
+  function hiddenBox(code) {
+    // Скрытый чекбокс — носитель значения для save() (читает input[type=checkbox]:checked).
+    return el("input", { type: "checkbox", value: code, checked: "checked", style: "display:none" });
+  }
+  function renderChips() {
+    chips.innerHTML = "";
+    wrap.querySelectorAll("input[type=checkbox]").forEach((c) => c.remove());
+    selected.forEach((code) => {
+      const known = list.find((c) => c.code === code || code.startsWith(c.code + "."));
+      const label = known ? `${code} — ${known.name}` : code;
+      chips.append(el("span", { class: "chip" }, [
+        el("span", {}, label),
+        el("a", { href: "#", class: "chip-x", onclick: (e) => {
+          e.preventDefault();
+          const i = selected.indexOf(code); if (i >= 0) selected.splice(i, 1); renderChips();
+        } }, "×"),
+      ]));
+      wrap.append(hiddenBox(code));
+    });
+    if (!selected.length) chips.append(el("span", { class: "muted" }, "классы не выбраны"));
+  }
+  function add(code) {
+    const v = (code || "").trim();
+    if (!v || selected.includes(v)) return;
+    selected.push(v); renderChips();
+  }
+
+  const sel = el("select", {}, [
+    el("option", { value: "" }, "— выберите класс —"),
+    ...list.map((c) => el("option", { value: c.code }, `${c.code} — ${c.name}`)),
+  ]);
+  const addBtn = el("button", { class: "ghost", type: "button",
+    onclick: () => { add(sel.value); sel.value = ""; } }, "Добавить");
+  const subInp = el("input", { type: "text", placeholder: "подкласс, напр. 05.09 — СВЕРИТЬ", style: "max-width:220px" });
+  const addSubBtn = el("button", { class: "ghost", type: "button",
+    onclick: () => { add(subInp.value); subInp.value = ""; } }, "Добавить подкласс");
+
+  wrap.append(
+    chips,
+    el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:6px" }, [sel, addBtn]),
+    el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:4px" }, [subInp, addSubBtn]),
+  );
+  renderChips();
+  return wrap;
+}
+
 // ---------- дашборд ----------
 async function viewDashboard() {
   const { products } = await api.get("/api/products");
@@ -359,6 +483,8 @@ async function viewProduct(id) {
   const classesRef = await api.get("/api/reference/classes").catch(() => null);
   // Доступно ли автозаполнение по ИНН (DaData). Без ключа на сервере — кнопки нет.
   const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
+  // Доступны ли git/npx на этом ПК — определяет режим «Мастера подготовки».
+  const prepState = await api.get("/api/prepare/status").catch(() => null);
   const p = product.product || {};
   const rh = product.rightholder || {};
   const f = product.finance || {};
@@ -372,7 +498,7 @@ async function viewProduct(id) {
     ["product.deliveryType", "Модель поставки", "select:SaaS,on-prem,hybrid"],
     ["product.guiLanguage", "Язык интерфейса", "select:ru,en"],
     ["product.productPageUrl", "URL страницы продукта", "text"],
-    ["product.class", "Класс(ы) ПО", "classpicker", "выберите класс из официального списка · подкласс СВЕРИТЬ"],
+    ["product.class", "Класс(ы) ПО", "classmulti", "выберите класс(ы) из официального списка · подкласс СВЕРИТЬ"],
     ["product.description", "Описание функциональных характеристик", "textarea"],
     ["product.purpose", "Назначение / область применения", "textarea"],
     ["rightholder.orgName", "Правообладатель", "text"],
@@ -389,7 +515,9 @@ async function viewProduct(id) {
     ["tech.supportedOS", "Поддерживаемые ОС", "multi:Astra Linux|РЕД ОС|Alt Linux|ROSA|МСВСфера|Windows"],
     ["tech.databases", "СУБД", "multi:PostgreSQL|Postgres Pro|ClickHouse|YDB|Tarantool|Ред База Данных|встроенная (SQLite/файловая)|не используется"],
     ["tech.infraLocation", "Локация инфраструктуры", "select:RU,иное"],
-    ["support.contactsRu", "Контакты ТП (РФ)", "text"],
+    ["support.contactFio", "Контакт ТП — ФИО", "text", "из профиля"],
+    ["support.contactEmail", "Контакт ТП — email", "text", "из профиля"],
+    ["support.contactPhone", "Контакт ТП — телефон", "text", "из профиля"],
   ];
 
   function getVal(pathStr) {
@@ -415,16 +543,14 @@ async function viewProduct(id) {
       extra = el("datalist", { id: listId }, opts.map((o) => el("option", { value: o })));
       input = el("input", { type: "text", "data-path": pathStr, "data-list": "1", list: listId,
         value: Array.isArray(cur) ? cur.join(", ") : (cur || "") });
-    } else if (type === "classpicker") {
-      // Официальный классификатор: подсказка «код — название», в поле сохраняется код.
-      // Несколько классов — через запятую. Подкласс (NN.NN) вписывается вручную.
-      const listId = "dl-class";
+    } else if (type === "classmulti") {
+      // Официальный классификатор: выбор класса из <select> + кнопка «Добавить».
+      // Выбранное показывается «чипами» с удалением; можно добавить подкласс (NN.NN)
+      // вручную. Значение — массив кодов, читается через data-multi при сохранении.
+      labelStyle = "grid-column:1 / -1";
       const list = (classesRef && classesRef.classes) || [];
-      extra = el("datalist", { id: listId }, list.map((c) =>
-        el("option", { value: c.code }, `${c.code} — ${c.name}`)));
-      input = el("input", { type: "text", "data-path": pathStr, "data-list": "1", list: listId,
-        placeholder: "напр. 05 или 05.09 — начните вводить код",
-        value: Array.isArray(cur) ? cur.join(", ") : (cur || "") });
+      const curArr = Array.isArray(cur) ? cur.slice() : (cur ? [cur] : []);
+      input = classMultiPicker(pathStr, list, curArr);
     } else if (type.startsWith("multi:")) {
       // Мультивыбор: чекбоксы по вариантам + поле «другое» для значений вне списка.
       labelStyle = "grid-column:1 / -1";
@@ -476,6 +602,51 @@ async function viewProduct(id) {
     } catch (e) {
       toast(e.message || "Не удалось получить данные", true);
     } finally { btn.disabled = false; btn.textContent = t0; }
+  }
+
+  // Применяет ЧЕРНОВИК из «Мастера подготовки» к полям формы (не сохраняет — человек
+  // проверяет и жмёт «Сохранить»). Патч — вложенный объект (product.*, tech.*); поля
+  // без инпута (напр. product.version) пишутся прямо в product и уедут при сохранении.
+  function applyDraft(draft) {
+    const patch = (draft && draft.patch) || {};
+    const flat = {};
+    (function walk(obj, pre) {
+      for (const [k, v] of Object.entries(obj)) {
+        if (k.startsWith("_")) continue; // служебные подсказки (_classHint)
+        const path = pre ? pre + "." + k : k;
+        if (v && typeof v === "object" && !Array.isArray(v)) walk(v, path);
+        else flat[path] = v;
+      }
+    })(patch, "");
+    let n = 0;
+    for (const [path, val] of Object.entries(flat)) {
+      const inp = app.querySelector(`[data-path="${path}"]`);
+      if (!inp) { setVal(path, val); n++; continue; }
+      applyToInput(inp, val); n++;
+    }
+    if (patch._classHint) toast("Возможный класс ПО: " + patch._classHint);
+    return n;
+  }
+  // Подставляет значение в конкретный инпут с учётом его типа (multi/list/обычный).
+  function applyToInput(inp, val) {
+    if (inp.getAttribute("data-multi")) {
+      const vals = Array.isArray(val) ? val : [val];
+      const boxes = Array.from(inp.querySelectorAll("input[type=checkbox]"));
+      const extra = inp.querySelector(".multi-extra");
+      const leftover = [];
+      vals.forEach((v) => {
+        const b = boxes.find((x) => x.value === v || x.value.toLowerCase().includes(String(v).toLowerCase()));
+        if (b) b.checked = true; else leftover.push(v);
+      });
+      if (extra && leftover.length) {
+        const cur = extra.value ? extra.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
+        extra.value = Array.from(new Set([...cur, ...leftover])).join(", ");
+      }
+    } else if (inp.getAttribute("data-list")) {
+      inp.value = Array.isArray(val) ? val.join(", ") : String(val == null ? "" : val);
+    } else {
+      inp.value = Array.isArray(val) ? val.join(", ") : (val == null ? "" : val);
+    }
   }
 
   async function save() {
@@ -531,7 +702,7 @@ async function viewProduct(id) {
   const DEPON_ITEMS = [
     ["dep_snapshot",  "Снимок версии кода + акт фиксации (SHA-256)",      ".zip,.tar,.gz,.7z,.rar", "dep_snapshot"],
     ["dep_referat",   "Реферат программы",                                ".docx,.pdf,.txt", "dep_referat"],
-    ["dep_codefrag",  "Фрагмент исходного кода (до 70 страниц)",          ".pdf,.docx", null],
+    ["dep_codefrag",  "Фрагмент исходного кода (до 70 страниц)",          ".pdf,.docx", "dep_codefrag"],
     ["dep_chain",     "Цепочка прав: договоры, служебные задания, акты",  ".pdf,.zip,.docx", "dep_chain"],
     ["dep_statement", "Заявление в Роспатент, подписанное УКЭП",          ".pdf,.sig,.zip", "dep_statement"],
     ["dep_cert",      "Свидетельство о госрегистрации ПО",                ".pdf,.png,.jpg,.jpeg", null],
@@ -546,8 +717,10 @@ async function viewProduct(id) {
     } catch (e) { toast(e.message || "Ошибка генерации", true); btn.disabled = false; btn.textContent = t0; }
   }
 
+  // Внутреннее сырьё авто-подготовки (листинг для фрагмента) не показываем и не считаем документом.
+  const isDeponRaw = (name) => /^dep_codefrag_listing\.txt$/i.test(name);
   const deponRows = DEPON_ITEMS.map(([key, label, accept, genKind]) => {
-    const files = artifacts.filter((a) => a.name.toLowerCase().startsWith(key + "_"));
+    const files = artifacts.filter((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name));
     const done = files.length > 0;
     const filesCell = files.length
       ? el("div", {}, files.map((a) => el("div", { class: "mono", style: "margin:1px 0" }, [
@@ -572,7 +745,7 @@ async function viewProduct(id) {
       el("td", { style: "width:1%;white-space:nowrap" }, el("div", { class: "row", style: "gap:4px;flex-wrap:nowrap" }, actions)),
     ]);
   });
-  const deponDone = DEPON_ITEMS.filter(([key]) => artifacts.some((a) => a.name.toLowerCase().startsWith(key + "_"))).length;
+  const deponDone = DEPON_ITEMS.filter(([key]) => artifacts.some((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name))).length;
 
   // Черновик реферата из карточки (свёрнут; для копирования при оформлении).
   const referat = [
@@ -613,7 +786,7 @@ async function viewProduct(id) {
       ]),
       classesReference(classesRef),
     ]),
-    prepWizard(),
+    prepWizard(id, prepState, applyDraft),
     el("div", { class: "panel" }, [
       el("h2", {}, "Артефакты для проверок"),
       el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» выше; <b>HAR</b> снимается в браузере (см. ниже)." }),
@@ -890,6 +1063,80 @@ async function viewSubmit(id) {
     el("div", { class: "muted", html:
       `Готовность по трекеру: <b>${S.readiness.percent}%</b> · проверки: ${badge(S.readiness.checksOverall)}. ` +
       "Пошлина 0 ₽. Срок цикла — ориентировочно 1–3 мес. (СВЕРИТЬ)." }),
+  ]));
+}
+
+// ---------- профиль правообладателя ----------
+// Единый профиль: заполняется один раз, реквизиты и контакты ТП подставляются
+// в новые карточки продуктов. Поля соответствуют FIELDS в api/profile.js.
+async function viewProfile() {
+  const { profile } = await api.get("/api/profile");
+  const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
+
+  const fields = [
+    ["rightholder.orgName", "Правообладатель (наименование)", "text"],
+    ["rightholder.inn", "ИНН", "text"],
+    ["rightholder.ogrn", "ОГРН", "text"],
+    ["rightholder.address", "Адрес правообладателя", "text"],
+    ["rightholder.ruControlSharePercent", "Доля РФ-контроля, %", "number"],
+    ["rightholder.signatory.name", "Подписант — ФИО", "text"],
+    ["rightholder.signatory.position", "Подписант — должность", "text"],
+    ["support.contactFio", "Контакт ТП — ФИО", "text"],
+    ["support.contactEmail", "Контакт ТП — email", "text"],
+    ["support.contactPhone", "Контакт ТП — телефон", "text"],
+  ];
+
+  const getVal = (path) => path.split(".").reduce((o, k) => (o == null ? o : o[k]), profile);
+
+  const form = el("div", { class: "two-col" }, fields.map(([path, label, type]) => {
+    const cur = getVal(path);
+    const input = el("input", { type: type === "number" ? "number" : "text", "data-path": path,
+      value: cur == null ? "" : cur });
+    let extra = null;
+    if (path === "rightholder.inn" && egrulStatus && egrulStatus.enabled) {
+      extra = el("button", { class: "ghost", type: "button", style: "margin-top:4px",
+        onclick: (ev) => fillInn(ev.target) }, "Заполнить по ИНН");
+    }
+    return el("label", { class: "field" },
+      [el("span", { style: "display:block;margin-bottom:4px" }, label), input, extra]);
+  }));
+
+  async function fillInn(btn) {
+    const innInp = app.querySelector('[data-path="rightholder.inn"]');
+    const inn = (innInp && innInp.value || "").trim();
+    if (!inn) { toast("Сначала введите ИНН", true); return; }
+    const t0 = btn.textContent; btn.disabled = true; btn.textContent = "…";
+    try {
+      const { data } = await api.post("/api/egrul/lookup", { inn });
+      const set = (p, v) => { const n = app.querySelector(`[data-path="${p}"]`); if (n && v) n.value = v; };
+      set("rightholder.orgName", data.orgName);
+      set("rightholder.ogrn", data.ogrn);
+      set("rightholder.address", data.address);
+      toast("Реквизиты подставлены — проверьте и сохраните");
+    } catch (e) { toast(e.message || "Не удалось получить данные", true); }
+    finally { btn.disabled = false; btn.textContent = t0; }
+  }
+
+  async function save() {
+    const out = {};
+    app.querySelectorAll("[data-path]").forEach((inp) => {
+      const keys = inp.getAttribute("data-path").split(".");
+      let o = out;
+      for (let i = 0; i < keys.length - 1; i++) { o[keys[i]] = o[keys[i]] || {}; o = o[keys[i]]; }
+      o[keys[keys.length - 1]] = inp.type === "number" ? (inp.value === "" ? null : Number(inp.value)) : inp.value;
+    });
+    await api.put("/api/profile", { profile: out });
+    toast("Профиль сохранён");
+  }
+
+  app.innerHTML = "";
+  app.append(el("div", { class: "panel" }, [
+    el("h2", {}, "Профиль правообладателя"),
+    el("div", { class: "hint", html:
+      "Заполните один раз — реквизиты организации и контакты техподдержки будут " +
+      "<b>автоматически подставляться</b> в каждый новый продукт. В карточке продукта значения можно переопределить." }),
+    form,
+    el("div", { class: "row", style: "margin-top:8px" }, [el("button", { onclick: save }, "Сохранить профиль")]),
   ]));
 }
 

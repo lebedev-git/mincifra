@@ -18,6 +18,8 @@ const DATA_DIR = process.env.REESTR_DATA_DIR
   ? path.resolve(process.env.REESTR_DATA_DIR)
   : path.join(PLATFORM_DIR, "data");
 const PRODUCTS_DIR = path.join(DATA_DIR, "products");
+// Единый профиль правообладателя (реквизиты + контакты ТП), общий для всех продуктов.
+const PROFILE_FILE = path.join(DATA_DIR, "profile.json");
 
 function ensureDir(d) { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); }
 function productDir(id) { return path.join(PRODUCTS_DIR, id); }
@@ -70,6 +72,17 @@ function listRaw() {
     if (fs.existsSync(pj)) out[id] = readJson(pj, null);
   }
   return out;
+}
+
+// --- Профиль правообладателя (единый на всю установку) ---
+// Заполняется один раз и подставляется в новые карточки продуктов. В самой карточке
+// значения можно переопределить локально — профиль лишь источник значений по умолчанию.
+function getProfile() {
+  return fs.existsSync(PROFILE_FILE) ? readJson(PROFILE_FILE, {}) : {};
+}
+function saveProfile(profile) {
+  writeJson(PROFILE_FILE, profile || {});
+  return getProfile();
 }
 
 // --- Публичный интерфейс репозитория ---
@@ -171,6 +184,7 @@ function dossierFilePath(id, name) {
 
 module.exports = {
   DATA_DIR, PRODUCTS_DIR, productDir,
+  getProfile, saveProfile,
   listProducts, getProduct, createProduct, saveProduct, deleteProduct,
   saveArtifact, artifactPath, listArtifacts,
   saveReport, getReport,

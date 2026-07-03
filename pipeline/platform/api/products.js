@@ -27,6 +27,40 @@ function loadTemplate() {
   return stripHelperKeys(JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf8")));
 }
 
+// Вливает значения единого профиля правообладателя в карточку поверх шаблона.
+// Профиль — источник значений по умолчанию: заполненные поля профиля перекрывают
+// условные примеры шаблона; пустые поля профиля не трогают карточку.
+function applyProfile(product, profile) {
+  if (!profile) return product;
+  const merge = (target, src) => {
+    for (const [k, v] of Object.entries(src || {})) {
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        target[k] = target[k] || {};
+        merge(target[k], v);
+      } else if (v !== "" && v !== null && v !== undefined) {
+        target[k] = v;
+      }
+    }
+  };
+  product.rightholder = product.rightholder || {};
+  product.support = product.support || {};
+  if (profile.rightholder) merge(product.rightholder, profile.rightholder);
+  if (profile.support) {
+    merge(product.support, profile.support);
+    // Собираем единую строку контактов ТП из раздельных полей — её используют
+    // модуль подачи (submission.js) и генерация досье, не знающие о новых полях.
+    product.support.contactsRu = joinContacts(product.support);
+  }
+  return product;
+}
+
+// ФИО · email · телефон → одна строка (для обратной совместимости support.contactsRu).
+function joinContacts(support) {
+  const s = support || {};
+  const parts = [s.contactFio, s.contactEmail, s.contactPhone].map((x) => (x || "").trim()).filter(Boolean);
+  return parts.length ? parts.join(", ") : (s.contactsRu || "");
+}
+
 // Краткая сводка по продукту для дашборда.
 function summary(id, product) {
   const t = tracker.buildTracker(id);
@@ -53,6 +87,8 @@ function register(router) {
   router.post("/api/products", async (req, res) => {
     const body = await readJsonBody(req);
     const template = loadTemplate();
+    // Реквизиты правообладателя и контакты ТП — из единого профиля (заполняется один раз).
+    applyProfile(template, store.getProfile());
     // Позволяем задать имя при создании; остальное — из шаблона (правится в UI).
     if (body.name) {
       template.product = template.product || {};
@@ -71,6 +107,8 @@ function register(router) {
   router.put("/api/products/:id", async (req, res) => {
     const body = await readJsonBody(req);
     const product = body.product || body; // допускаем и {product:{...}}, и голый объект
+    // Держим сводную строку контактов ТП в актуальном виде для модуля подачи и досье.
+    if (product && product.support) product.support.contactsRu = joinContacts(product.support);
     const saved = store.saveProduct(req.params.id, product);
     sendJson(res, 200, { id: req.params.id, product: saved });
   });

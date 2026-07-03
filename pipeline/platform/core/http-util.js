@@ -27,13 +27,15 @@ const MIME = {
 function mimeFor(file) { return MIME[path.extname(file).toLowerCase()] || "application/octet-stream"; }
 
 // Собрать тело запроса в Buffer с лимитом.
-function readBody(req) {
+// maxBytes — необязательный лимит для конкретного маршрута (по умолчанию MAX_BODY = 25 МБ).
+// Загрузка снимка проекта (ZIP) шлёт большие тела, поэтому autofill передаёт свой лимит.
+function readBody(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
-      if (size > MAX_BODY) { reject(errWithStatus(413, "Тело запроса слишком большое")); req.destroy(); return; }
+      if (size > maxBytes) { reject(errWithStatus(413, "Тело запроса слишком большое")); req.destroy(); return; }
       chunks.push(c);
     });
     req.on("end", () => resolve(Buffer.concat(chunks)));

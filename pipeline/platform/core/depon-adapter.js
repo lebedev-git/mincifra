@@ -9,6 +9,7 @@ const path = require("path");
 const crypto = require("crypto");
 const store = require("./store");
 const { listDeponDocs, buildDeponDoc } = require("../../03_docs/depon");
+const { LISTING_ARTIFACT } = require("./prepare");
 
 // Ищет загруженный архив снимка кода (dep_snapshot_*, не .docx) и считает его хеш.
 function snapshotContext(id) {
@@ -26,15 +27,31 @@ function snapshotContext(id) {
   };
 }
 
+// Читает собранный листинг исходников (сырьё авто-подготовки) для «Фрагмента кода».
+function listingContext(id) {
+  const p = store.artifactPath(id, LISTING_ARTIFACT);
+  if (!fs.existsSync(p)) return {};
+  return { listing: fs.readFileSync(p, "utf8") };
+}
+
 async function generate(id, kind) {
   const product = store.getProduct(id);
   const def = listDeponDocs().find((d) => d.kind === kind);
   if (!def) { const e = new Error("Неизвестный документ депонирования"); e.status = 400; throw e; }
 
-  const ctx = def.needsArchive ? snapshotContext(id) : {};
-  if (def.needsArchive && !ctx.hash) {
-    const e = new Error("Сначала загрузите архив снимка кода — по нему считается контрольная сумма.");
-    e.status = 400; throw e;
+  let ctx = {};
+  if (def.needsArchive) {
+    ctx = snapshotContext(id);
+    if (!ctx.hash) {
+      const e = new Error("Сначала загрузите архив снимка кода — по нему считается контрольная сумма.");
+      e.status = 400; throw e;
+    }
+  } else if (def.needsListing) {
+    ctx = listingContext(id);
+    if (!ctx.listing) {
+      const e = new Error("Сначала выполните «Подготовить автоматически» — платформа соберёт листинг исходного кода.");
+      e.status = 400; throw e;
+    }
   }
 
   const { fileName, buffer, title } = await buildDeponDoc(kind, product, ctx);

@@ -96,6 +96,14 @@ textarea { min-height: 90px; resize: vertical; }
 .multi .chk input[type=checkbox] { width: auto; margin: 0; }
 .multi .multi-extra { flex: 1 1 180px; min-width: 150px; }
 
+/* Выбор класса(ов) ПО: чипы + select. Блочная раскладка вместо flex-строки. */
+.multi.classmulti { display: block; }
+.classmulti .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; }
+.classmulti .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+  background: #eef4fb; border: 1px solid #cfe0f2; border-radius: 12px; font-size: 12px; color: var(--text); }
+.classmulti .chip-x { color: var(--fail); text-decoration: none; font-weight: 700; line-height: 1; }
+.classmulti select { max-width: 420px; }
+
 /* Таблицы */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
