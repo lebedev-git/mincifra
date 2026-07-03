@@ -9,6 +9,7 @@ const app = document.getElementById("app");
 const routes = [
   { rx: /^#?\/?$/, view: viewDashboard },
   { rx: /^#\/about$/, view: viewAbout },
+  { rx: /^#\/glossary$/, view: viewGlossary },
   { rx: /^#\/profile$/, view: viewProfile },
   { rx: /^#\/p\/([^/]+)\/checks$/, view: (m) => viewChecks(m[1]) },
   { rx: /^#\/p\/([^/]+)\/tracker$/, view: (m) => viewTracker(m[1]) },
@@ -1156,6 +1157,55 @@ function viewAbout() {
       "Значения с пометкой «СВЕРИТЬ» (сроки, коды классов, форматы вложений) проверяйте на " +
       "<span class='mono'>reestr.digital.gov.ru</span> и в действующей редакции ПП № 1236 перед подачей." }),
   ]));
+}
+
+// ---------- Словарь (глоссарий) ----------
+// Мини-рендерер markdown под подмножество ГЛОССАРИЙ.md: заголовки, списки,
+// **жирный**, `код`, ---, ссылки. Сначала экранируем, потом инлайны — безопасно.
+function mdInline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function mdToHtml(md) {
+  const out = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+  for (const raw of String(md).split(/\r?\n/)) {
+    const line = raw.replace(/\s+$/, "");
+    if (/^#{1,6}\s/.test(line)) {
+      closeList();
+      const lvl = line.match(/^(#{1,6})/)[1].length;
+      out.push(`<h${lvl}>${mdInline(line.replace(/^#{1,6}\s+/, ""))}</h${lvl}>`);
+    } else if (/^---+$/.test(line)) {
+      closeList(); out.push("<hr>");
+    } else if (/^-\s+/.test(line)) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${mdInline(line.replace(/^-\s+/, ""))}</li>`);
+    } else if (line.trim() === "") {
+      closeList();
+    } else {
+      closeList(); out.push(`<p>${mdInline(line)}</p>`);
+    }
+  }
+  closeList();
+  return out.join("\n");
+}
+async function viewGlossary() {
+  app.innerHTML = "";
+  const panel = el("div", { class: "panel glossary" }, [el("p", {}, "Загрузка словаря…")]);
+  app.append(panel);
+  try {
+    const md = await api.get("/api/reference/glossary");
+    panel.innerHTML = mdToHtml(md);
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.append(
+      el("h2", {}, "Словарь недоступен"),
+      el("p", {}, "Не удалось загрузить глоссарий: " + (e && e.message || "ошибка")),
+    );
+  }
 }
 
 })();
