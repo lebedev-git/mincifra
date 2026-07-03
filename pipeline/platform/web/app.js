@@ -12,7 +12,7 @@ const routes = [
   { rx: /^#\/glossary$/, view: viewGlossary },
   { rx: /^#\/profile$/, view: viewProfile },
   { rx: /^#\/p\/([^/]+)\/checks$/, view: (m) => viewChecks(m[1]) },
-  { rx: /^#\/p\/([^/]+)\/tracker$/, view: (m) => viewTracker(m[1]) },
+  { rx: /^#\/p\/([^/]+)\/tracker(?:\/([A-Za-z0-9]+))?$/, view: (m) => viewTracker(m[1], m[2]) },
   { rx: /^#\/p\/([^/]+)\/docs$/, view: (m) => viewDocs(m[1]) },
   { rx: /^#\/p\/([^/]+)\/submit$/, view: (m) => viewSubmit(m[1]) },
   { rx: /^#\/p\/([^/]+)$/, view: (m) => viewProduct(m[1]) },
@@ -47,106 +47,71 @@ function crumbs(items) {
     i.href ? `<a href="${esc(i.href)}">${esc(i.text)}</a>` : esc(i.text)).join(" / ") });
 }
 
-// ---------- маршрут подготовки (степпер) ----------
-// Единый порядок работы с продуктом: Карточка → Проверки → Трекер → Документы → Отправка.
-// Статус каждого шага считается из уже существующих данных (readiness/tracker/dossier) —
-// никакой новой бизнес-логики, только визуализация того, что уже посчитано на сервере.
-const STEPS = [
-  { key: "", label: "Карточка", num: "1" },
-  { key: "/checks", label: "Проверки", num: "2" },
-  { key: "/tracker", label: "Трекер (гейты)", num: "3" },
-  { key: "/docs", label: "Документы", num: "4" },
-  { key: "/submit", label: "Отправка", num: "5" },
-];
+// ---------- маршрут подготовки: степпер по гейтам G0–G5 ----------
+// Реальная единица стадийности процесса — гейт (см. 01_tracker/pipeline_tracker.md),
+// не экран инструмента. Процесс НЕ линейный: G0/G1/G2/G4/G5 — организационные,
+// готовятся параллельно друг другу и параллельно с G3 (авто-проверки). Поэтому клик
+// по любому гейту всегда работает, без «Далее»/confirm — линейность тут была бы ложью.
 const STEP_ICON = { done: "✅", blocked: "⛔", active: "🟡", todo: "🔲" };
 
-// Подтягивает всё, что нужно степперу, тремя параллельными запросами. Ошибка одного
-// запроса не валит остальные — просто соответствующий шаг покажется как "🔲 не начат".
+// Тянет трекер (единственный источник статусов гейтов — tracker.buildTracker на сервере).
 async function loadStepMeta(id) {
-  const [trackerRes, readinessRes, docsRes] = await Promise.all([
-    api.get(`/api/products/${id}/tracker`).catch(() => null),
-    api.get(`/api/products/${id}/readiness`).catch(() => null),
-    api.get(`/api/products/${id}/dossier`).catch(() => null),
-  ]);
-  return {
-    tracker: trackerRes && trackerRes.tracker,
-    readiness: readinessRes && readinessRes.readiness,
-    docsCount: (docsRes && docsRes.docs && docsRes.docs.length) || 0,
-  };
+  const trackerRes = await api.get(`/api/products/${id}/tracker`).catch(() => null);
+  return { tracker: trackerRes && trackerRes.tracker };
 }
 
-// Статус конкретного шага: todo (🔲 не начат) · active (🟡 в работе) · done (✅ готово) ·
-// blocked (⛔ есть FAIL). Логика — тонкая обёртка над данными, которые уже считает бэкенд.
-function stepStatus(key, meta) {
-  if (!meta) return "todo";
-  if (key === "") {
-    const r = meta.readiness;
-    if (!r) return "todo";
-    if (r.complete) return "done";
-    return r.filled > 0 ? "active" : "todo";
-  }
-  if (key === "/checks") {
-    const t = meta.tracker;
+// Статус гейта: todo (🔲 не начат) · active (🟡 в работе) · done (✅ готово) ·
+// blocked (⛔, только G3 — реальный FAIL в проверках). Ничего не считает заново —
+// просто читает то, что уже посчитал tracker.buildTracker на сервере.
+function gateStatus(gate, meta) {
+  if (gate.auto) {
+    const t = meta && meta.tracker;
     if (!t || !t.hasReport) return "todo";
     if (t.checksOverall === "FAIL") return "blocked";
-    if (t.checksOverall === "PASS") return "done";
-    return "active"; // WARN / смешанный со SKIP
+    return gate.complete ? "done" : "active";
   }
-  if (key === "/tracker") {
-    const t = meta.tracker;
-    if (!t) return "todo";
-    if (t.percent >= 100) return "done";
-    return t.percent > 0 ? "active" : "todo";
-  }
-  if (key === "/docs") return meta.docsCount > 0 ? "done" : "todo";
-  if (key === "/submit") {
-    const t = meta.tracker;
-    if (!t) return "todo";
-    if (t.percent >= 100) return "done";
-    return t.percent > 0 ? "active" : "todo";
-  }
-  return "todo";
+  if (gate.complete) return "done";
+  return gate.done > 0 ? "active" : "todo";
 }
 
-// Степпер-навигация вместо вкладок: видно весь маршрут G0–G5 сразу, текущий шаг
-// подсвечен, статус каждого — из реальных данных продукта (не декоративный).
-function stepper(id, activeKey, meta) {
+// Гейт-степпер: все G0–G5 видны сразу, каждый кликабелен независимо от остальных
+// (не линейно — можно открыть любой гейт в любой момент). G3 (авто) ведёт на «Проверки»,
+// остальные — на «Трекер» с прокруткой/подсветкой нужного гейта.
+function gateStepper(id, meta) {
+  const gates = (meta && meta.tracker && meta.tracker.gates) || [];
+  if (!gates.length) return el("div", { class: "muted" }, "Гейты загружаются…");
   const nodes = [];
-  STEPS.forEach((s, i) => {
+  gates.forEach((g, i) => {
     if (i > 0) {
-      const prevStatus = stepStatus(STEPS[i - 1].key, meta);
+      const prevStatus = gateStatus(gates[i - 1], meta);
       nodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
     }
-    const status = stepStatus(s.key, meta);
-    const isCurrent = activeKey === s.key;
-    const href = `#/p/${id}${s.key}`;
-    const circle = el("a", { href, class: "step-circle " + status + (isCurrent ? " current" : ""),
-      title: s.label + " — " + { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status] },
-      STEP_ICON[status] === "🔲" ? s.num : STEP_ICON[status]);
-    const label = el("a", { href, class: "step-label" + (isCurrent ? " current" : "") }, s.label);
+    const status = gateStatus(g, meta);
+    const href = g.auto ? `#/p/${id}/checks` : `#/p/${id}/tracker/${g.id}`;
+    const statusText = { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status];
+    const circle = el("a", { href, class: "step-circle " + status,
+      title: `${g.id} ${g.title} — ${statusText} (${g.done}/${g.total})` }, g.id);
+    const label = el("a", { href, class: "step-label" }, g.title);
     nodes.push(el("div", { class: "step" }, [circle, label]));
   });
   return el("div", { class: "stepper" }, nodes);
 }
 
-// Кнопка «Далее» — ведёт по маршруту вперёд. Не блокирует переход намертво (гейты
-// G0/G1/G2/G4/G5 зависят от внешних документов/портала и могут готовиться неделями
-// параллельно с техподготовкой), но переспрашивает, если текущий шаг ещё не закрыт.
-function nextStepNav(id, activeKey, meta) {
-  const idx = STEPS.findIndex((s) => s.key === activeKey);
-  if (idx < 0 || idx >= STEPS.length - 1) return null;
-  const cur = STEPS[idx], nxt = STEPS[idx + 1];
-  const goto = () => {
-    const curStatus = stepStatus(cur.key, meta);
-    if (curStatus !== "done") {
-      const ok = confirm(`Шаг «${cur.label}» ещё не завершён (${STEP_ICON[curStatus]}). Перейти к «${nxt.label}» всё равно?`);
-      if (!ok) return;
-    }
-    location.hash = `#/p/${id}${nxt.key}`;
-  };
-  return el("div", { class: "row", style: "justify-content:flex-end;margin:4px 0 16px" }, [
-    el("button", { onclick: goto }, `Далее: ${nxt.label} →`),
-  ]);
+// Вторичная навигация по экранам инструмента (не путать с гейтами выше — это разные
+// оси: гейт = стадия процесса подачи, экран = инструмент для работы с одной/несколькими
+// стадиями сразу). Свободный клик, без статусов и без блокировок.
+function screenTabs(id, active) {
+  const items = [
+    { k: "", t: "Карточка" }, { k: "/checks", t: "Проверки" },
+    { k: "/tracker", t: "Трекер" }, { k: "/docs", t: "Документы" },
+    { k: "/submit", t: "Отправка" },
+  ];
+  return el("div", { class: "row", style: "margin-bottom:14px;gap:8px" },
+    items.map((it) => {
+      const href = `#/p/${id}${it.k}`;
+      const cls = "btn" + (active === it.k ? "" : " ghost");
+      return el("a", { class: cls, href }, it.t);
+    }));
 }
 
 // Сворачиваемый блок-инструкция: <details class="help"> с заголовком и телом.
@@ -877,7 +842,8 @@ async function viewProduct(id) {
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: p.name || id }]),
-    stepper(id, "", stepMeta),
+    gateStepper(id, stepMeta),
+    screenTabs(id, ""),
     el("div", { class: "panel" }, [
       el("h2", {}, "Карточка продукта"),
       form,
@@ -917,7 +883,6 @@ async function viewProduct(id) {
       el("h2", {}, "Ключевые условия входа в реестр"),
       conditionsHelp(),
     ]),
-    nextStepNav(id, "", stepMeta),
   );
 }
 
@@ -929,7 +894,8 @@ async function viewChecks(id) {
   const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]), stepper(id, "/checks", stepMeta));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]),
+    gateStepper(id, stepMeta), screenTabs(id, "/checks"));
 
   const runBtn = el("button", { onclick: run }, "▶ Запустить проверки");
   const panel = el("div", { class: "panel" }, [
@@ -941,7 +907,6 @@ async function viewChecks(id) {
     el("div", { id: "checks-body" }),
   ]);
   app.append(panel);
-  app.append(nextStepNav(id, "/checks", stepMeta));
   renderReport(report);
 
   async function run() {
@@ -983,14 +948,18 @@ async function viewChecks(id) {
 }
 
 // ---------- трекер ----------
-async function viewTracker(id) {
+// focusGateId (опционально) — с каким гейтом открыть страницу: пришли с клика по
+// гейт-степперу на другом экране (#/p/:id/tracker/:gateId). Просто подсвечиваем и
+// скроллим к нему — сами гейты и их состав не меняются.
+async function viewTracker(id, focusGateId) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { tracker } = await api.get(`/api/products/${id}/tracker`);
-  const stepMeta = await loadStepMeta(id);
+  const stepMeta = { tracker };
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]), stepper(id, "/tracker", stepMeta));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]),
+    gateStepper(id, stepMeta), screenTabs(id, "/tracker"));
 
   const overall = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center", html:
@@ -1000,6 +969,7 @@ async function viewTracker(id) {
   ]);
   app.append(overall);
 
+  let focusNode = null;
   tracker.gates.forEach((g) => {
     const items = g.items.map((it) => {
       const cb = el("input", { type: "checkbox", ...(it.done ? { checked: "checked" } : {}),
@@ -1013,17 +983,20 @@ async function viewTracker(id) {
         g.auto ? el("span", { class: "auto-tag" }, "из проверок") : null,
       ]);
     });
-    app.append(el("div", { class: "gate" }, [
+    const isFocus = focusGateId && g.id === focusGateId;
+    const gateNode = el("div", { class: "gate" + (isFocus ? " focus" : "") }, [
       el("div", { class: "head", html:
         `<span class="gid">${esc(g.id)}</span> <span>${esc(g.title)}</span>` +
         `<span class="pct">${g.done}/${g.total}${g.auto ? " · авто" : ""}</span>` }),
       el("div", { class: "items" }, items),
-    ]));
+    ]);
+    if (isFocus) focusNode = gateNode;
+    app.append(gateNode);
   });
 
   if (!tracker.hasReport) app.append(el("div", { class: "hint" },
     "Гейт G3 заполнится после запуска проверок на вкладке «Проверки»."));
-  app.append(nextStepNav(id, "/tracker", stepMeta));
+  if (focusNode) focusNode.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // ---------- документы ----------
@@ -1034,7 +1007,8 @@ async function viewDocs(id) {
   const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]), stepper(id, "/docs", stepMeta));
+  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]),
+    gateStepper(id, stepMeta), screenTabs(id, "/docs"));
 
   const genBtn = el("button", { onclick: gen }, "📄 Сгенерировать досье");
   const list = el("div", { id: "docs-list" });
@@ -1064,7 +1038,6 @@ async function viewDocs(id) {
     ]));
     list.append(el("table", {}, [el("tr", {}, [el("th", {}, "Файл"), el("th", {}, "Размер")]), ...rows]));
   }
-  app.append(nextStepNav(id, "/docs", stepMeta));
 }
 
 // ---------- отправка (монтажный лист подачи) ----------
@@ -1076,7 +1049,7 @@ async function viewSubmit(id) {
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: S.productName, href: `#/p/${id}` }, { text: "Отправка" }]),
-    stepper(id, "/submit", stepMeta),
+    gateStepper(id, stepMeta), screenTabs(id, "/submit"),
   );
 
   app.append(el("div", { class: "hint", html:
