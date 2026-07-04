@@ -99,4 +99,4 @@ function run(product, baseDir) {
   return { id, title, status, summary, findings };
 }
 
-module.exports = { run };
+module.exports = { run, hostFromUrl, isAllowed, matchForeign };

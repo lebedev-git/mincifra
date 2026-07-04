@@ -10,19 +10,21 @@
 //       • RAW   тело = .zip, ?notes=...  — загруженный ZIP-снимок
 //     Делает снимок/SHA-256/SBOM (как prepare) И возвращает ЧЕРНОВИК полей карточки.
 //
-//   GET  /api/prepare/status             — доступность git / npx / LLM (для UI)
+//   GET  /api/prepare/status             — доступность git / npx / LLM / Playwright (для UI)
+//   POST /api/products/:id/collect-har   — автосбор HAR headless-браузером (core/har_capture)
 
 const prepare = require("../core/prepare");
 const localsource = require("../core/localsource");
 const autofill = require("../core/autofill");
 const llm = require("../core/llm");
+const harCapture = require("../core/har_capture");
 const store = require("../core/store");
 const { readBody, readJsonBody, sendJson } = require("../core/http-util");
 
 function register(router) {
   router.get("/api/prepare/status", async (req, res) => {
     const st = await prepare.status();
-    sendJson(res, 200, { ...st, llm: llm.isEnabled() });
+    sendJson(res, 200, { ...st, llm: llm.isEnabled(), harCapture: harCapture.status() });
   });
 
   // Сетевой prepare по ссылке (оставлен как запасной путь).
@@ -69,6 +71,23 @@ function register(router) {
     } finally {
       built.cleanup();
     }
+  });
+
+  // Автосбор HAR: без тела запроса берёт product.product.productPageUrl;
+  // тело { url } позволяет указать другой адрес (например, демо-стенд).
+  router.post("/api/products/:id/collect-har", async (req, res) => {
+    const { id } = req.params;
+    const product = store.getProduct(id); // 404, если продукта нет
+    const ctype = String(req.headers["content-type"] || "");
+    const body = ctype.includes("application/json") ? await readJsonBody(req) : {};
+    const url = body.url || (product.product && product.product.productPageUrl);
+
+    const { harBuffer, hostsCount, warnings } = await harCapture.capture(url);
+    store.saveArtifact(id, "network.captured.har", harBuffer);
+    sendJson(res, 200, {
+      artifact: "network.captured.har", hostsCount, warnings,
+      artifacts: store.listArtifacts(id),
+    });
   });
 }
 

@@ -8,10 +8,14 @@
     "start": "node server.js"
   },
   "peerDependencies": {
-    "docx": ">=8"
+    "docx": ">=8",
+    "playwright": ">=1.40"
   },
   "peerDependenciesMeta": {
     "docx": {
+      "optional": true
+    },
+    "playwright": {
       "optional": true
     }
   },

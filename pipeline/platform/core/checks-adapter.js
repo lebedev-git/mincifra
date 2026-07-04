@@ -34,11 +34,12 @@ function pickArtifact(names, hints) {
 }
 
 // Запуск проверок для продукта id. Возвращает { results, totals, overall, markdown, ranAt }.
-function runForProduct(id) {
+// opts.live — добавить живую HTTP-проверку страницы продукта (см. checks.js).
+async function runForProduct(id, opts = {}) {
   const product = store.getProduct(id);
   const prepared = prepareProduct(id, product);
   const baseDir = store.productDir(id); // артефакты лежат здесь, пути относительны ему
-  const payload = runAllChecks(prepared, baseDir);
+  const payload = await runAllChecks(prepared, baseDir, opts);
   const markdown = buildMarkdownReport(payload, prepared, {
     productLabel: `${id}/product.json`,
   });

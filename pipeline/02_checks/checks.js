@@ -2,9 +2,13 @@
 // Чистая логика технических проверок готовности (без побочных эффектов).
 // Используется CLI-обёрткой run_checks.js и веб-платформой (platform/).
 //
-// runAllChecks(product, baseDir) -> { results, totals, overall }
+// runAllChecks(product, baseDir, opts) -> { results, totals, overall }
 //   product  — разобранный объект карточки продукта (product.json)
 //   baseDir  — каталог для относительных путей к артефактам (SBOM/HAR)
+//   opts.live — true → добавить живую HTTP-проверку страницы (page_check.runLive).
+//               Требует исходящей сети из окружения; по умолчанию выключено —
+//               без opts.live поведение и результат идентичны прежним (только
+//               детерминированные офлайн-проверки).
 // buildMarkdownReport(payload, product, { productLabel }) -> string
 
 const path = require("path");
@@ -18,7 +22,9 @@ const requisites = require("./lib/requisites");
 const STATUS_ICON = { PASS: "✅", WARN: "🟡", FAIL: "⛔", SKIP: "⚪" };
 
 // Порядок проверок фиксирован для стабильного отчёта.
-function runAllChecks(product, baseDir) {
+// Асинхронна из-за опциональной живой проверки (opts.live); без неё все входящие
+// в неё проверки синхронны и функция разрешается сразу же на первом тике.
+async function runAllChecks(product, baseDir, opts = {}) {
   const results = [
     foreignPayments.run(product),
     licenseScan.run(product, baseDir),
@@ -26,6 +32,7 @@ function runAllChecks(product, baseDir) {
     pageCheck.run(product),
     requisites.run(product),
   ];
+  if (opts.live) results.push(await pageCheck.runLive(product));
   const totals = { PASS: 0, WARN: 0, FAIL: 0, SKIP: 0 };
   results.forEach((r) => { totals[r.status] = (totals[r.status] || 0) + 1; });
   const overall = totals.FAIL > 0 ? "FAIL" : totals.WARN > 0 ? "WARN" : "PASS";

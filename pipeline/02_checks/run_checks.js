@@ -1,7 +1,9 @@
 "use strict";
 // CLI-обёртка технических проверок готовности к реестру российского ПО.
-// Запуск:  node 02_checks/run_checks.js [путь к product.json]
+// Запуск:  node 02_checks/run_checks.js [путь к product.json] [--live]
 // По умолчанию берёт ../product.json, при отсутствии — ../product.example.json.
+// --live — добавить живую HTTP-проверку productPageUrl (реальный запрос в сеть,
+//          по умолчанию выключено — без флага инструмент офлайн).
 // Итог: консольный отчёт + Markdown-отчёт 02_checks/last_report.md.
 // Код возврата: 0 — нет FAIL; 1 — есть хотя бы один FAIL.
 //
@@ -21,8 +23,10 @@ function resolveProductPath(arg) {
   return path.join(PIPELINE_DIR, "product.example.json");
 }
 
-function main() {
-  const productPath = resolveProductPath(process.argv[2]);
+async function main() {
+  const args = process.argv.slice(2).filter((a) => a !== "--live");
+  const live = process.argv.includes("--live");
+  const productPath = resolveProductPath(args[0]);
   if (!fs.existsSync(productPath)) {
     console.error(`Не найден файл карточки продукта: ${productPath}`);
     process.exit(2);
@@ -36,7 +40,7 @@ function main() {
   }
 
   // baseDir для относительных путей к артефактам (SBOM/HAR) — каталог pipeline.
-  const payload = runAllChecks(product, PIPELINE_DIR);
+  const payload = await runAllChecks(product, PIPELINE_DIR, { live });
   const { results, totals, overall } = payload;
 
   // --- Консоль ---
@@ -71,4 +75,4 @@ function main() {
   process.exit(overall === "FAIL" ? 1 : 0);
 }
 
-main();
+main().catch((e) => { console.error("Ошибка выполнения проверок:", e.message || e); process.exit(2); });

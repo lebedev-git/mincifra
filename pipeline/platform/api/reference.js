@@ -4,7 +4,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { sendJson, sendText, sendError, errWithStatus } = require("../core/http-util");
+const { sendJson, sendText, sendError, errWithStatus, readJsonBody } = require("../core/http-util");
+const classHint = require("../core/class_hint");
 
 const CLASSES_PATH = path.resolve(__dirname, "../../99_reference/software_classes.json");
 // Глоссарий — единый источник: файл pipeline/ГЛОССАРИЙ.md (не дублируем текст в UI).
@@ -27,6 +28,14 @@ function loadGlossary() {
 function register(router) {
   router.get("/api/reference/classes", (req, res) => {
     sendJson(res, 200, loadClasses());
+  });
+
+  // Подсказка класса ПО по тексту (описание + назначение). Детерминированно,
+  // без сети — сужает 12 верхнеуровневых классов до кандидатов по ключевым словам.
+  router.post("/api/reference/suggest-class", async (req, res) => {
+    const body = await readJsonBody(req);
+    const suggestions = classHint.suggestClasses(body.text);
+    sendJson(res, 200, { suggestions });
   });
   router.get("/api/reference/glossary", (req, res) => {
     try { sendText(res, 200, loadGlossary(), "text/markdown; charset=utf-8"); }

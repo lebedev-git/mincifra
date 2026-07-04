@@ -307,22 +307,29 @@ function classesReference(ref) {
   const rows = ref.classes.map((c) => el("tr", {}, [
     el("td", { class: "mono", style: "width:1%;white-space:nowrap" }, c.code),
     el("td", {}, c.name),
+    el("td", { style: "width:1%;white-space:nowrap" }, c.pp325 ? "⚠️ ПП№325" : ""),
   ]));
   return help("📚 Классификатор ПО — официальные классы (СВЕРИТЬ подкласс)", [
     el("div", { class: "muted", style: "margin-bottom:6px", html:
       `Источник: <b>${esc(ref.source || "—")}</b>. Сверено: ${esc(ref.verifiedAt || "—")}. ` +
       "Ниже — верхнеуровневые классы. Точный <b>подкласс</b> (например 05.09) и его формулировку " +
-      "сверьте на <span class='mono'>reestr.digital.gov.ru</span> перед подачей." }),
-    el("table", {}, [el("tr", {}, [el("th", {}, "Код"), el("th", {}, "Класс")]), ...rows]),
+      "сверьте на <span class='mono'>reestr.digital.gov.ru</span> перед подачей. " +
+      "Пометка <b>ПП№325</b> — по этому классу в принципе действуют доптребования к ОС/СУБД/офисному ПО; " +
+      "точный состав для вашего продукта также СВЕРИТЬ на портале." }),
+    el("table", {}, [el("tr", {}, [el("th", {}, "Код"), el("th", {}, "Класс"), el("th", {}, "")]), ...rows]),
   ]);
 }
 
 // Виджет выбора класса(ов) ПО. Совместим с механизмом сохранения data-multi:
 // выбранные коды хранятся как скрытые checked-чекбоксы внутри контейнера, поэтому
 // save() соберёт их так же, как обычный мультивыбор. UI — чипы + select + подкласс.
-function classMultiPicker(pathStr, list, curArr) {
+// getContextText() — необязательный колбэк, отдающий текст (описание+назначение)
+// для кнопки-подсказки класса по ключевым словам (core/class_hint.js).
+function classMultiPicker(pathStr, list, curArr, getContextText) {
   const wrap = el("div", { class: "multi classmulti", "data-path": pathStr, "data-multi": "1" });
   const chips = el("div", { class: "chips" });
+  const pp325Note = el("div", { class: "muted", style: "font-size:12px;margin-top:4px;display:none" },
+    "⚠️ Для выбранного класса в принципе действуют доптребования ПП №325 (к ОС/СУБД/офисному ПО) — сверьте точный состав на reestr.digital.gov.ru перед подачей.");
   const selected = curArr.slice();
 
   function hiddenBox(code) {
@@ -345,6 +352,13 @@ function classMultiPicker(pathStr, list, curArr) {
       wrap.append(hiddenBox(code));
     });
     if (!selected.length) chips.append(el("span", { class: "muted" }, "классы не выбраны"));
+    // ПП№325 — применимо, если хотя бы один выбранный код относится к классу с pp325=true
+    // (сверяем по верхнеуровневому коду, т.к. справочник хранит только его).
+    const applies = selected.some((code) => {
+      const top = list.find((c) => code.startsWith(c.code));
+      return top && top.pp325;
+    });
+    pp325Note.style.display = applies ? "" : "none";
   }
   function add(code) {
     const v = (code || "").trim();
@@ -364,9 +378,33 @@ function classMultiPicker(pathStr, list, curArr) {
 
   wrap.append(
     chips,
+    pp325Note,
     el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:6px" }, [sel, addBtn]),
     el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:4px" }, [subInp, addSubBtn]),
   );
+
+  // Подсказка класса по описанию/назначению — по ключевым словам, детерминированно,
+  // без сети (class_hint.js). Кандидаты кликабельны — добавляют код тем же add().
+  if (typeof getContextText === "function") {
+    const suggestMsg = el("span", { class: "muted", style: "font-size:12px" });
+    const suggestBtn = el("button", { class: "ghost", type: "button", onclick: suggest }, "💡 Подсказать класс по описанию");
+    wrap.append(el("div", { class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center" }, [suggestBtn, suggestMsg]));
+
+    async function suggest() {
+      suggestMsg.textContent = "…";
+      try {
+        const { suggestions } = await api.post("/api/reference/suggest-class", { text: getContextText() });
+        suggestMsg.innerHTML = "";
+        if (!suggestions.length) { suggestMsg.textContent = "Совпадений по ключевым словам не найдено — выберите класс вручную."; return; }
+        suggestMsg.append("Кандидаты: ");
+        suggestions.forEach((s) => {
+          suggestMsg.append(el("a", { href: "#", style: "margin-right:10px", onclick: (e) => { e.preventDefault(); add(s.code); } },
+            `${s.code} — ${s.name}${s.pp325 ? " ⚠️ПП№325" : ""}`));
+        });
+      } catch (e) { suggestMsg.textContent = "Ошибка: " + (e.message || e); }
+    }
+  }
+
   renderChips();
   return wrap;
 }
@@ -494,7 +532,12 @@ async function viewProduct(id) {
       labelStyle = "grid-column:1 / -1";
       const list = (classesRef && classesRef.classes) || [];
       const curArr = Array.isArray(cur) ? cur.slice() : (cur ? [cur] : []);
-      input = classMultiPicker(pathStr, list, curArr);
+      const getContextText = () => {
+        const d = document.querySelector('[data-path="product.description"]');
+        const pu = document.querySelector('[data-path="product.purpose"]');
+        return [(d && d.value) || "", (pu && pu.value) || ""].join(" ");
+      };
+      input = classMultiPicker(pathStr, list, curArr, getContextText);
     } else if (type.startsWith("multi:")) {
       // Мультивыбор: чекбоксы по вариантам + поле «другое» для значений вне списка.
       labelStyle = "grid-column:1 / -1";
@@ -656,18 +699,24 @@ async function viewChecks(id) {
   const artList = el("div", {}, checkArtifacts.length
     ? checkArtifacts.map((a) => el("div", { class: "meta mono" }, `• ${a.name} (${a.size} б)`))
     : [el("div", { class: "muted" }, "нет загруженных артефактов")]);
+  const harAutoBtn = el("button", { class: "ghost", onclick: collectHarAuto }, "🌐 Собрать HAR автоматически");
+  const harAutoMsg = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" });
+
   app.append(el("div", { class: "panel" }, [
     el("h2", {}, "Артефакты для проверок"),
-    el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» на карточке; <b>HAR</b> снимается в браузере (см. ниже)." }),
+    el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» на карточке; <b>HAR</b> снимается в браузере (см. ниже) либо автоматически." }),
     el("div", { class: "row", style: "gap:8px" }, [
       uploader(id, "sbom", "SBOM", null, () => viewChecks(id)),
       uploader(id, "har", "HAR", null, () => viewChecks(id)),
+      harAutoBtn,
     ]),
+    harAutoMsg,
     el("div", { class: "spacer" }), artList,
     el("div", { class: "spacer" }),
     harHelp(),
   ]));
 
+  const liveChk = el("input", { type: "checkbox", id: "live-check" });
   const runBtn = el("button", { onclick: run }, "▶ Запустить проверки");
   const panel = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center" }, [
@@ -675,15 +724,44 @@ async function viewChecks(id) {
     ]),
     el("div", { class: "muted", style: "margin:4px 0 8px;font-size:12px" },
       "Обновляются автоматически при сохранении карточки и загрузке артефактов. Кнопка — для ручного перезапуска."),
+    el("label", { class: "chk", style: "font-size:12px;margin-bottom:8px" }, [liveChk,
+      el("span", {}, " добавить живую проверку страницы (реальный HTTP-запрос к URL продукта из этого окружения)")]),
     el("div", { id: "checks-body" }),
   ]);
   app.append(panel);
   renderReport(report);
 
+  // Автосбор HAR: headless-браузер сам открывает productPageUrl и записывает сетевой
+  // трафик — избавляет от ручного F12→Network→Save as HAR. Опционально: требует
+  // Node.js (npx) и один раз скачивает браузер Playwright (~150 МБ) при первом запуске.
+  async function collectHarAuto() {
+    harAutoBtn.disabled = true;
+    const prevText = harAutoBtn.textContent;
+    harAutoBtn.textContent = "Собираю…";
+    harAutoMsg.textContent = "Открываю страницу продукта headless-браузером — при первом запуске может понадобиться скачать браузер (до нескольких минут)…";
+    try {
+      const res = await api.post(`/api/products/${id}/collect-har`);
+      if (res.warnings && res.warnings.length) {
+        harAutoMsg.textContent = res.warnings.join(" ");
+        toast("Готово с замечаниями — см. ниже", true);
+      } else {
+        harAutoMsg.textContent = `Сохранено: ${res.artifact} (хостов записано: ${res.hostsCount ?? "—"}).`;
+        toast("HAR собран автоматически");
+      }
+      await viewChecks(id);
+    } catch (e) {
+      harAutoMsg.textContent = "Не удалось собрать HAR автоматически: " + (e.message || e) + ". Используйте ручной способ ниже.";
+      toast("Ошибка автосбора HAR", true);
+    } finally {
+      harAutoBtn.disabled = false; harAutoBtn.textContent = prevText;
+    }
+  }
+
   async function run() {
     runBtn.disabled = true; runBtn.textContent = "Выполняется…";
     try {
-      const res = await api.post(`/api/products/${id}/checks`);
+      const qs = liveChk.checked ? "?live=1" : "";
+      const res = await api.post(`/api/products/${id}/checks${qs}`);
       toast("Проверки выполнены");
       renderReport(res.report);
     } finally { runBtn.disabled = false; runBtn.textContent = "▶ Запустить проверки"; }
