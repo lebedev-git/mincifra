@@ -57,24 +57,26 @@ header.topbar nav a { color: #fff; font-size: 13px; }
 .row { display: flex; gap: 16px; flex-wrap: wrap; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 
-/* Гейт-степпер: реальные стадии процесса подачи (G0–G5), не экраны инструмента.
-   Каждый гейт кликабелен независимо от остальных — процесс не линейный (см.
-   app.js:gateStepper). Статус — из tracker.buildTracker, ничего не декоративно. */
-.stepper { display: flex; align-items: flex-start; margin-bottom: 14px; padding: 4px 0; }
-.stepper .step { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 96px; flex-shrink: 0; }
-.stepper .step-line { flex: 1 1 auto; height: 2px; background: var(--line); margin-top: 19px; min-width: 8px; }
+/* Единая строка навигации (app.js:topNav): слева компактные гейты G0–G5, справа
+   вкладки экранов — один ряд вместо двух. Название гейта — только в title (тултип),
+   не текстом на странице: это разгружает верх каждого экрана. */
+.topnav { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; padding: 4px 0; flex-wrap: wrap; }
+.topnav-sep { width: 1px; height: 26px; background: var(--line); flex-shrink: 0; }
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.stepper { display: flex; align-items: center; }
+.stepper .step-line { width: 12px; height: 2px; background: var(--line); flex-shrink: 0; }
 .stepper .step-line.filled { background: var(--blue-2); }
 .step-circle {
-  display: flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center; width: 30px; height: 30px;
   border-radius: 50%; border: 2px solid var(--line); background: #fff; color: var(--muted);
-  font-weight: 700; font-size: 12px; text-decoration: none; flex-shrink: 0;
+  font-weight: 700; font-size: 11px; text-decoration: none; flex-shrink: 0;
 }
 .step-circle:hover { text-decoration: none; border-color: var(--blue-2); }
 .step-circle.todo { border-color: var(--line); color: var(--muted); }
 .step-circle.active { border-color: var(--warn); color: var(--warn); background: #fffaf0; }
 .step-circle.done { border-color: var(--pass); background: var(--pass); color: #fff; }
 .step-circle.blocked { border-color: var(--fail); background: var(--fail); color: #fff; }
-.step-label { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.25; }
 
 /* Подсветка гейта, к которому перешли кликом со степпера на другом экране. */
 .gate.focus { border-color: var(--blue-2); box-shadow: 0 0 0 3px rgba(46, 84, 150, .18); }

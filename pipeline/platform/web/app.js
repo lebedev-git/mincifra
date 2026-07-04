@@ -47,6 +47,25 @@ function crumbs(items) {
     i.href ? `<a href="${esc(i.href)}">${esc(i.text)}</a>` : esc(i.text)).join(" / ") });
 }
 
+// Загрузчик артефакта: одна и та же кнопка+инпут — для SBOM/HAR (питают проверки G3,
+// живут на «Проверках») и для файлов депонирования (dep_*, живут на «Документах»).
+// onDone — что сделать после успешной загрузки (обычно — перерисовать текущий экран).
+function uploader(id, kind, label, accept, onDone) {
+  const acc = accept || (kind === "sbom" ? ".json" : ".har,.json");
+  const inp = el("input", { type: "file", style: "display:none", accept: acc });
+  inp.addEventListener("change", async () => {
+    const file = inp.files[0]; if (!file) return;
+    const buf = await file.arrayBuffer();
+    await api.putRaw(`/api/products/${id}/artifacts/${kind}?name=${encodeURIComponent(file.name)}`, buf);
+    if (kind !== "rights") await runChecksSilent(id);
+    toast(`${label} загружен`);
+    if (onDone) onDone();
+  });
+  return el("span", {}, [
+    el("button", { class: "ghost", onclick: () => inp.click() }, `Загрузить ${label}`), inp,
+  ]);
+}
+
 // ---------- маршрут подготовки: степпер по гейтам G0–G5 ----------
 // Реальная единица стадийности процесса — гейт (см. 01_tracker/pipeline_tracker.md),
 // не экран инструмента. Процесс НЕ линейный: G0/G1/G2/G4/G5 — организационные,
@@ -74,44 +93,41 @@ function gateStatus(gate, meta) {
   return gate.done > 0 ? "active" : "todo";
 }
 
-// Гейт-степпер: все G0–G5 видны сразу, каждый кликабелен независимо от остальных
-// (не линейно — можно открыть любой гейт в любой момент). G3 (авто) ведёт на «Проверки»,
-// остальные — на «Трекер» с прокруткой/подсветкой нужного гейта.
-function gateStepper(id, meta) {
+// Единая строка навигации: слева — компактные кружки гейтов G0–G5 (кликабельны
+// независимо друг от друга, без «Далее»/confirm — процесс не линейный, подробности
+// в title каждого кружка), справа — вкладки экранов инструмента. Раньше это были
+// два визуально разных ряда друг под другом; по сути обе оси нужны, но не ценой
+// двух отдельных блоков — сведены в один ряд.
+function topNav(id, active, meta) {
   const gates = (meta && meta.tracker && meta.tracker.gates) || [];
-  if (!gates.length) return el("div", { class: "muted" }, "Гейты загружаются…");
-  const nodes = [];
+  const gateNodes = [];
   gates.forEach((g, i) => {
     if (i > 0) {
       const prevStatus = gateStatus(gates[i - 1], meta);
-      nodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
+      gateNodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
     }
     const status = gateStatus(g, meta);
     const href = g.auto ? `#/p/${id}/checks` : `#/p/${id}/tracker/${g.id}`;
     const statusText = { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status];
-    const circle = el("a", { href, class: "step-circle " + status,
-      title: `${g.id} ${g.title} — ${statusText} (${g.done}/${g.total})` }, g.id);
-    const label = el("a", { href, class: "step-label" }, g.title);
-    nodes.push(el("div", { class: "step" }, [circle, label]));
+    gateNodes.push(el("a", { href, class: "step-circle " + status,
+      title: `${g.id} ${g.title} — ${statusText} (${g.done}/${g.total})` }, g.id));
   });
-  return el("div", { class: "stepper" }, nodes);
-}
+  const gatesRow = gates.length
+    ? el("div", { class: "stepper" }, gateNodes)
+    : el("div", { class: "muted" }, "Гейты загружаются…");
 
-// Вторичная навигация по экранам инструмента (не путать с гейтами выше — это разные
-// оси: гейт = стадия процесса подачи, экран = инструмент для работы с одной/несколькими
-// стадиями сразу). Свободный клик, без статусов и без блокировок.
-function screenTabs(id, active) {
   const items = [
     { k: "", t: "Карточка" }, { k: "/checks", t: "Проверки" },
     { k: "/tracker", t: "Трекер" }, { k: "/docs", t: "Документы" },
     { k: "/submit", t: "Отправка" },
   ];
-  return el("div", { class: "row", style: "margin-bottom:14px;gap:8px" },
-    items.map((it) => {
-      const href = `#/p/${id}${it.k}`;
-      const cls = "btn" + (active === it.k ? "" : " ghost");
-      return el("a", { class: cls, href }, it.t);
-    }));
+  const tabsRow = el("div", { class: "tabs" }, items.map((it) => {
+    const href = `#/p/${id}${it.k}`;
+    const cls = "btn" + (active === it.k ? "" : " ghost");
+    return el("a", { class: cls, href }, it.t);
+  }));
+
+  return el("div", { class: "topnav" }, [gatesRow, el("div", { class: "topnav-sep" }), tabsRow]);
 }
 
 // Сворачиваемый блок-инструкция: <details class="help"> с заголовком и телом.
@@ -131,104 +147,17 @@ function cmdBlock(text) {
   ]);
 }
 
-// Скачивание сгенерированного текста как файла (скрипт подготовки).
-function downloadText(name, text) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = el("a", { href: url, download: name });
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// Конфигурация ОС для Мастера подготовки. Всё делается через git + npx (ставить ничего не нужно).
-const OS_CFG = {
-  win:   { label: "Windows (PowerShell)", file: "prepare.ps1", sep: "\\", eol: "\r\n",
-           hash: (p) => `certutil -hashfile ${p} SHA256`,
-           run: "В папке со скриптом: правой кнопкой → «Открыть в терминале», затем выполните команду ниже." },
-  linux: { label: "Linux (Astra / РЕД / Alt)", file: "prepare.sh", sep: "/", eol: "\n",
-           hash: (p) => `sha256sum ${p}`,
-           run: "В папке со скриптом откройте терминал и выполните команду ниже." },
-  mac:   { label: "macOS", file: "prepare.sh", sep: "/", eol: "\n",
-           hash: (p) => `shasum -a 256 ${p}`,
-           run: "В папке со скриптом откройте Терминал и выполните команду ниже." },
-};
-function detectOS() {
-  const s = (navigator.userAgent + " " + (navigator.platform || "")).toLowerCase();
-  if (s.includes("win")) return "win";
-  if (s.includes("mac")) return "mac";
-  return "linux";
-}
-// Команда запуска скрипта после скачивания.
-function runCmd(os) {
-  return os === "win" ? "powershell -ExecutionPolicy Bypass -File .\\prepare.ps1" : "bash prepare.sh";
-}
-// Полный скрипт «сделать всё сам»: клон → снимок → SHA-256 → SBOM в папку registry-artifacts.
-function prepScript(os, repo) {
-  const R = repo || "<ССЫЛКА_НА_РЕПОЗИТОРИЙ>";
-  if (os === "win") return [
-    "# Подготовка артефактов для реестра российского ПО",
-    "$ErrorActionPreference = 'Stop'",
-    "$repo = '" + R + "'",
-    "$out = Join-Path (Get-Location) 'registry-artifacts'",
-    "New-Item -ItemType Directory -Force -Path $out | Out-Null",
-    "",
-    "Write-Host '1/4 Клонирую репозиторий...'",
-    'git clone --depth 1 $repo "$out\\src"',
-    "",
-    "Write-Host '2/4 Чистый снимок версии (ZIP)...'",
-    'git -C "$out\\src" archive --format=zip -o "$out\\snapshot.zip" HEAD',
-    "",
-    "Write-Host '3/4 Считаю SHA-256...'",
-    'certutil -hashfile "$out\\snapshot.zip" SHA256 | Out-File -Encoding utf8 "$out\\sha256.txt"',
-    "",
-    "Write-Host '4/4 Генерирую SBOM...'",
-    'npx --yes @cyclonedx/cdxgen@latest -o "$out\\sbom.json" "$out\\src"',
-    "",
-    "Write-Host ''",
-    'Write-Host "Готово! Файлы в папке: $out"',
-    'Write-Host "  sbom.json    -> загрузить как SBOM"',
-    'Write-Host "  snapshot.zip -> загрузить в Снимок версии кода"',
-    'Write-Host "  sha256.txt   -> отпечаток для акта фиксации"',
-  ].join("\r\n");
-  const hash = os === "mac" ? "shasum -a 256" : "sha256sum";
-  return [
-    "#!/usr/bin/env bash",
-    "# Подготовка артефактов для реестра российского ПО",
-    "set -e",
-    "repo='" + R + "'",
-    'out="$(pwd)/registry-artifacts"',
-    'mkdir -p "$out"',
-    "",
-    'echo "1/4 Клонирую репозиторий..."',
-    'git clone --depth 1 "$repo" "$out/src"',
-    "",
-    'echo "2/4 Чистый снимок версии (ZIP)..."',
-    'git -C "$out/src" archive --format=zip -o "$out/snapshot.zip" HEAD',
-    "",
-    'echo "3/4 Считаю SHA-256..."',
-    hash + ' "$out/snapshot.zip" > "$out/sha256.txt"',
-    "",
-    'echo "4/4 Генерирую SBOM..."',
-    'npx --yes @cyclonedx/cdxgen@latest -o "$out/sbom.json" "$out/src"',
-    "",
-    'echo ""',
-    'echo "Готово! Файлы в папке: $out"',
-    'echo "  sbom.json    -> загрузить как SBOM"',
-    'echo "  snapshot.zip -> загрузить в Снимок версии кода"',
-    'echo "  sha256.txt   -> отпечаток для акта фиксации"',
-  ].join("\n");
-}
-
-// Мастер подготовки. ОСНОВНОЙ путь — локальный источник кода (папка на этом ПК или
+// Мастер подготовки. Единственный путь — локальный источник кода (папка на этом ПК или
 // ZIP): платформа делает снимок + SHA-256 + SBOM И заполняет карточку черновиком (из
 // package.json/README + ваших заметок; при заданном ключе — с LLM-улучшением). Сеть не
-// нужна — это убирает «падение» на тяжёлых репозиториях. Сетевой git-путь и скачивание
-// скрипта оставлены как запасные (сворачиваемые) варианты.
+// нужна — это убирает «падение» на тяжёлых репозиториях. Запасные пути (клон по ссылке,
+// скачать и запустить скрипт самому) убраны: они дублировали этот же результат более
+// длинным путём — раз сервер и так делает всю работу, показывать их «на всякий случай»
+// не нужно (бритва Оккама).
 // prepState — { git, npx, llm } из /api/prepare/status; onDraft(draft,result) применяет
 // черновик к полям карточки (передаётся из viewProduct).
 function prepWizard(id, prepState, onDraft) {
-  const state = { mode: "path", path: "", notes: "", zipFile: null, repo: "", os: detectOS() };
-  const canServer = !!(prepState && prepState.git);
+  const state = { mode: "path", path: "", notes: "", zipFile: null };
   const llmOn = !!(prepState && prepState.llm);
   const progress = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" });
 
@@ -297,60 +226,6 @@ function prepWizard(id, prepState, onDraft) {
         (llmOn ? "LLM-улучшение описания включено." : "LLM выключен — используется ваш текст как есть (офлайн).") })
     : el("div", { class: "hint muted" }, "Статус инструментов не получен.");
 
-  // --- Запасной путь 1: сетевой git по ссылке ---
-  const repoInp = el("input", { type: "text", value: "",
-    placeholder: "https://github.com/ваша-компания/ваш-продукт.git" });
-  repoInp.addEventListener("input", () => { state.repo = repoInp.value.trim(); });
-  async function runServer(btn) {
-    if (!state.repo) { toast("Вставьте ссылку на репозиторий", true); return; }
-    const t0 = btn.textContent; btn.disabled = true; btn.textContent = "Подготовка…";
-    progress.textContent = "Клонирую репозиторий, делаю снимок, считаю SHA-256 и собираю SBOM…";
-    try {
-      const { result } = await api.post(`/api/products/${id}/prepare`, { repo: state.repo });
-      const bits = [`снимок готов (SHA-256 ${result.sha256.slice(0, 12)}…)`];
-      if (result.sbom) bits.push("SBOM собран");
-      toast("Готово: " + bits.join(", "));
-      (result.warnings || []).forEach((w) => toast(w, true));
-      progress.textContent = "Готово. Снимок/листинг в артефактах.";
-    } catch (e) {
-      progress.textContent = "";
-      toast(e.message || "Не удалось выполнить подготовку", true);
-    } finally { btn.disabled = false; btn.textContent = t0; }
-  }
-  const runBtn = el("button", { class: "ghost", onclick: () => runServer(runBtn) }, "⚙ Клонировать по ссылке");
-  if (!canServer) { runBtn.disabled = true; runBtn.title = "На этом ПК не найден git"; }
-  function gitBlock() {
-    return help("🌐 Запасной вариант: клонировать по ссылке (нужна сеть и git)", [
-      el("div", { class: "muted", style: "margin-bottom:6px" },
-        "Если проекта нет на этом ПК — платформа склонирует его по ссылке. На больших репозиториях " +
-        "клонирование может срываться; тогда используйте локальную папку или ZIP выше."),
-      el("label", { class: "field" }, [
-        el("span", { style: "display:block;margin-bottom:4px" }, "Ссылка на репозиторий (Git)"), repoInp]),
-      el("div", { class: "row", style: "margin-top:6px" }, [runBtn]),
-    ]);
-  }
-
-  // --- Запасной путь 2: скачать скрипт под ОС ---
-  function scriptBlock() {
-    const cfg = OS_CFG[state.os];
-    const osSel = el("select", {}, Object.entries(OS_CFG).map(([k, c]) =>
-      el("option", { value: k, ...(k === state.os ? { selected: "selected" } : {}) }, c.label)));
-    const dlBtn = el("button", { class: "ghost", onclick: () => {
-      const r = state.repo || state.path;
-      if (!r) { toast("Укажите ссылку или путь выше", true); return; }
-      downloadText(OS_CFG[state.os].file, prepScript(state.os, state.repo));
-      toast(`Скрипт ${OS_CFG[state.os].file} скачан`);
-    } }, "⬇ Скачать скрипт");
-    osSel.addEventListener("change", () => { state.os = osSel.value; });
-    return help("💾 Запасной вариант: скачать скрипт и запустить самому", [
-      el("div", { class: "muted", style: "margin-bottom:6px" },
-        "Для машин без прав/без git: скачайте скрипт под вашу ОС и запустите его в пустой папке."),
-      el("div", { class: "row", style: "gap:8px;align-items:center" }, [osSel, dlBtn]),
-      el("div", { class: "muted", style: "font-size:12px;margin-top:6px" }, cfg.run),
-      cmdBlock(runCmd(state.os)),
-    ]);
-  }
-
   return el("div", { class: "panel" }, [
     el("h2", {}, "🧙 Мастер подготовки — заполнить карточку и собрать файлы"),
     statusHint,
@@ -368,8 +243,6 @@ function prepWizard(id, prepState, onDraft) {
     el("div", { class: "hint", html:
       "Значения — <b>черновик</b>: проверьте и при необходимости поправьте перед сохранением. " +
       "Реквизиты правообладателя берутся из профиля; коды классов и юридические поля сверяет человек." }),
-    gitBlock(),
-    scriptBlock(),
   ]);
 }
 
@@ -501,10 +374,14 @@ function classMultiPicker(pathStr, list, curArr) {
 // Грубая оценка «на каком шаге маршрута сейчас продукт» без доп. запросов — только
 // по сводке, которую уже отдаёт /api/products (percent из трекера, статус проверок).
 // Точный расчёт (с учётом полноты карточки) — на самой странице продукта (stepStatus).
+// Один текст вместо трёх параллельных индикаторов (было: прогресс-бар + «Готовность:
+// X% · Проверки: badge» + бейдж стадии). Процент уже виден на самом прогресс-баре —
+// в тексте оставляем то, чего бар не показывает: смысл текущего состояния и, если
+// уместно, число.
 function dashboardStage(p) {
   if (p.checksOverall === "FAIL") return { key: "blocked", text: "⛔ Есть блокеры в проверках" };
-  if (!p.hasReport) return { key: "todo", text: "🔲 Шаг 1–2: карточка и проверки" };
-  if (p.percent < 100) return { key: "active", text: "🟡 Шаг 3: трекер гейтов" };
+  if (!p.hasReport) return { key: "todo", text: "🔲 Карточка и проверки" };
+  if (p.percent < 100) return { key: "active", text: `🟡 Трекер гейтов · ${p.percent}%` };
   return { key: "done", text: "✅ Готово к отправке" };
 }
 
@@ -522,7 +399,6 @@ async function viewDashboard() {
       el("div", { class: "name" }, p.name),
       el("div", { class: "meta" }, `${p.shortName || "—"} · ${p.deliveryType || "—"}`),
       progressBar(p.percent),
-      el("div", { class: "meta", html: `Готовность: <b>${p.percent}%</b> · Проверки: ${badge(p.checksOverall)}` }),
       el("div", { class: "step-tag " + stage.key }, stage.text),
     ]);
     return card;
@@ -740,110 +616,10 @@ async function viewProduct(id) {
   }
 
   // Артефакты
-  const { artifacts } = await api.get(`/api/products/${id}/artifacts`);
-  // В панели проверок показываем только SBOM/HAR; документы депонирования (dep_/rights_) — в своём разделе.
-  const checkArtifacts = artifacts.filter((a) => !/^(dep_|rights_)/i.test(a.name));
-  const artList = el("div", {}, checkArtifacts.length
-    ? checkArtifacts.map((a) => el("div", { class: "meta mono" }, `• ${a.name} (${a.size} б)`))
-    : [el("div", { class: "muted" }, "нет загруженных артефактов")]);
-
-  // kind: sbom|har запускают проверки; rights (правоустанавливающие) — просто хранятся.
-  function uploader(kind, label, accept) {
-    const acc = accept || (kind === "sbom" ? ".json" : ".har,.json");
-    const inp = el("input", { type: "file", style: "display:none", accept: acc });
-    inp.addEventListener("change", async () => {
-      const file = inp.files[0]; if (!file) return;
-      const buf = await file.arrayBuffer();
-      await api.putRaw(`/api/products/${id}/artifacts/${kind}?name=${encodeURIComponent(file.name)}`, buf);
-      if (kind !== "rights") await runChecksSilent(id);
-      toast(`${label} загружен`);
-      viewProduct(id);
-    });
-    return el("span", {}, [
-      el("button", { class: "ghost", onclick: () => inp.click() }, `Загрузить ${label}`), inp,
-    ]);
-  }
-
-  // --- Трекер подготовки к депонированию (Роспатент) ---
-  // Пункты: ключ (= префикс файлов), формулировка, допустимые форматы.
-  // [ключ, подпись, форматы загрузки, genKind|null] — genKind: можно сгенерировать автоматически.
-  const DEPON_ITEMS = [
-    ["dep_snapshot",  "Снимок версии кода + акт фиксации (SHA-256)",      ".zip,.tar,.gz,.7z,.rar", "dep_snapshot"],
-    ["dep_referat",   "Реферат программы",                                ".docx,.pdf,.txt", "dep_referat"],
-    ["dep_codefrag",  "Фрагмент исходного кода (до 70 страниц)",          ".pdf,.docx", "dep_codefrag"],
-    ["dep_chain",     "Цепочка прав: договоры, служебные задания, акты",  ".pdf,.zip,.docx", "dep_chain"],
-    ["dep_statement", "Заявление в Роспатент, подписанное УКЭП",          ".pdf,.sig,.zip", "dep_statement"],
-    ["dep_cert",      "Свидетельство о госрегистрации ПО",                ".pdf,.png,.jpg,.jpeg", null],
-  ];
-
-  async function genDepon(kind, btn) {
-    btn.disabled = true; const t0 = btn.textContent; btn.textContent = "…";
-    try {
-      const res = await api.post(`/api/products/${id}/depon/${kind}`);
-      toast(`Сгенерировано: ${res.generated.title}`);
-      viewProduct(id);
-    } catch (e) { toast(e.message || "Ошибка генерации", true); btn.disabled = false; btn.textContent = t0; }
-  }
-
-  // Внутреннее сырьё авто-подготовки (листинг для фрагмента) не показываем и не считаем документом.
-  const isDeponRaw = (name) => /^dep_codefrag_listing\.txt$/i.test(name);
-  const deponRows = DEPON_ITEMS.map(([key, label, accept, genKind]) => {
-    const files = artifacts.filter((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name));
-    const done = files.length > 0;
-    const filesCell = files.length
-      ? el("div", {}, files.map((a) => el("div", { class: "mono", style: "margin:1px 0" }, [
-          el("a", { href: `/api/products/${id}/artifacts/file/${encodeURIComponent(a.name)}` },
-            a.name.slice(key.length + 1)),
-          el("a", { href: "#", style: "margin-left:8px;color:var(--fail)", onclick: async (e) => {
-            e.preventDefault();
-            if (confirm("Удалить файл?")) { await api.del(`/api/products/${id}/artifacts/${encodeURIComponent(a.name)}`); viewProduct(id); }
-          } }, "×"),
-        ])))
-      : el("span", { class: "muted" }, "—");
-    const actions = [uploader(key, "файл", accept)];
-    if (genKind) {
-      const gb = el("button", { class: "ghost", style: "margin-left:6px",
-        onclick: () => genDepon(genKind, gb) }, "Сгенерировать");
-      actions.push(gb);
-    }
-    return el("tr", {}, [
-      el("td", { style: "width:1%;white-space:nowrap" }, done ? "✅" : "☐"),
-      el("td", {}, label),
-      el("td", { style: "width:26%" }, filesCell),
-      el("td", { style: "width:1%;white-space:nowrap" }, el("div", { class: "row", style: "gap:4px;flex-wrap:nowrap" }, actions)),
-    ]);
-  });
-  const deponDone = DEPON_ITEMS.filter(([key]) => artifacts.some((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name))).length;
-
-  // Черновик реферата из карточки (свёрнут; для копирования при оформлении).
-  const referat = [
-    "РЕФЕРАТ программы для ЭВМ", "",
-    `Название программы: ${p.name || "—"}`,
-    `Правообладатель: ${rh.orgName || "—"} (ИНН ${rh.inn || "—"}, ОГРН ${rh.ogrn || "—"})`,
-    "Авторы: — ФИО разработчиков —",
-    "Язык программирования: — указать —",
-    `Операционные системы: ${(Array.isArray(t.supportedOS) ? t.supportedOS.join(", ") : t.supportedOS) || "—"}`,
-    "Объём программы: — напр. 12 МБ —", "",
-    "Аннотация:", p.description || "— функциональные характеристики —", "",
-    `Назначение: ${p.purpose || "— область применения —"}`,
-    "Графический интерфейс — на русском языке.",
-  ].join("\n");
-  const referatBox = el("textarea", { readonly: "readonly",
-    style: "width:100%;min-height:180px;font-family:Consolas,monospace;font-size:12px" }, referat);
-  const referatDraft = help("✍ Черновик реферата — скопировать и оформить в .docx", [
-    referatBox,
-    el("div", { class: "row", style: "margin-top:6px" }, [
-      el("button", { class: "ghost", onclick: async () => {
-        const ok = await copy(referat); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);
-      } }, "Копировать"),
-    ]),
-  ]);
-
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: p.name || id }]),
-    gateStepper(id, stepMeta),
-    screenTabs(id, ""),
+    topNav(id, "", stepMeta),
     el("div", { class: "panel" }, [
       el("h2", {}, "Карточка продукта"),
       form,
@@ -856,33 +632,10 @@ async function viewProduct(id) {
       classesReference(classesRef),
     ]),
     prepWizard(id, prepState, applyDraft),
-    el("div", { class: "panel" }, [
-      el("h2", {}, "Артефакты для проверок"),
-      el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» выше; <b>HAR</b> снимается в браузере (см. ниже)." }),
-      el("div", { class: "row", style: "gap:8px" }, [uploader("sbom", "SBOM"), uploader("har", "HAR")]),
-      el("div", { class: "spacer" }), artList,
-      el("div", { class: "spacer" }),
-      harHelp(),
-    ]),
-    el("div", { class: "panel" }, [
-      el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
-        el("h2", { style: "flex:1;margin:0" }, "Подготовка к депонированию (Роспатент)"),
-        el("span", { class: "muted" }, `Готово: ${deponDone}/${DEPON_ITEMS.length}`),
-      ]),
-      el("table", {}, [
-        el("tr", {}, [el("th", {}, ""), el("th", {}, "Документ"), el("th", {}, "Файлы"), el("th", {}, "")]),
-        ...deponRows,
-      ]),
-      el("div", { class: "spacer" }),
-      el("div", { class: "muted", style: "font-size:12px" },
-        "Снимок версии кода и SHA-256 готовит «Мастер подготовки» вверху страницы."),
-      codefragHelp(),
-      referatDraft,
-    ]),
-    el("div", { class: "panel" }, [
-      el("h2", {}, "Ключевые условия входа в реестр"),
-      conditionsHelp(),
-    ]),
+    el("div", { class: "hint", html:
+      "Дальше по маршруту: загрузка <b>SBOM/HAR</b> и запуск проверок — на вкладке " +
+      `<a href="#/p/${id}/checks">«Проверки»</a>; файлы для депонирования и реферат — на ` +
+      `<a href="#/p/${id}/docs">«Документах»</a>.` }),
   );
 }
 
@@ -891,11 +644,29 @@ async function viewChecks(id) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { report } = await api.get(`/api/products/${id}/report`);
+  const { artifacts } = await api.get(`/api/products/${id}/artifacts`);
   const stepMeta = await loadStepMeta(id);
 
   app.innerHTML = "";
   app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]),
-    gateStepper(id, stepMeta), screenTabs(id, "/checks"));
+    topNav(id, "/checks", stepMeta));
+
+  // Артефакты, которые питают проверки (SBOM/HAR); документы депонирования (dep_/rights_) — на «Документах».
+  const checkArtifacts = artifacts.filter((a) => !/^(dep_|rights_)/i.test(a.name));
+  const artList = el("div", {}, checkArtifacts.length
+    ? checkArtifacts.map((a) => el("div", { class: "meta mono" }, `• ${a.name} (${a.size} б)`))
+    : [el("div", { class: "muted" }, "нет загруженных артефактов")]);
+  app.append(el("div", { class: "panel" }, [
+    el("h2", {}, "Артефакты для проверок"),
+    el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» на карточке; <b>HAR</b> снимается в браузере (см. ниже)." }),
+    el("div", { class: "row", style: "gap:8px" }, [
+      uploader(id, "sbom", "SBOM", null, () => viewChecks(id)),
+      uploader(id, "har", "HAR", null, () => viewChecks(id)),
+    ]),
+    el("div", { class: "spacer" }), artList,
+    el("div", { class: "spacer" }),
+    harHelp(),
+  ]));
 
   const runBtn = el("button", { onclick: run }, "▶ Запустить проверки");
   const panel = el("div", { class: "panel" }, [
@@ -959,7 +730,7 @@ async function viewTracker(id, focusGateId) {
 
   app.innerHTML = "";
   app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]),
-    gateStepper(id, stepMeta), screenTabs(id, "/tracker"));
+    topNav(id, "/tracker", stepMeta));
 
   const overall = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center", html:
@@ -1004,11 +775,15 @@ async function viewDocs(id) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
   const { docs } = await api.get(`/api/products/${id}/dossier`);
+  const { artifacts } = await api.get(`/api/products/${id}/artifacts`);
   const stepMeta = await loadStepMeta(id);
+  const p = product.product || {};
+  const rh = product.rightholder || {};
+  const t = product.tech || {};
 
   app.innerHTML = "";
   app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]),
-    gateStepper(id, stepMeta), screenTabs(id, "/docs"));
+    topNav(id, "/docs", stepMeta));
 
   const genBtn = el("button", { onclick: gen }, "📄 Сгенерировать досье");
   const list = el("div", { id: "docs-list" });
@@ -1038,6 +813,97 @@ async function viewDocs(id) {
     ]));
     list.append(el("table", {}, [el("tr", {}, [el("th", {}, "Файл"), el("th", {}, "Размер")]), ...rows]));
   }
+
+  // --- Трекер подготовки к депонированию (Роспатент) ---
+  // Пункты: ключ (= префикс файлов), формулировка, допустимые форматы.
+  // [ключ, подпись, форматы загрузки, genKind|null] — genKind: можно сгенерировать автоматически.
+  const DEPON_ITEMS = [
+    ["dep_snapshot",  "Снимок версии кода + акт фиксации (SHA-256)",      ".zip,.tar,.gz,.7z,.rar", "dep_snapshot"],
+    ["dep_referat",   "Реферат программы",                                ".docx,.pdf,.txt", "dep_referat"],
+    ["dep_codefrag",  "Фрагмент исходного кода (до 70 страниц)",          ".pdf,.docx", "dep_codefrag"],
+    ["dep_chain",     "Цепочка прав: договоры, служебные задания, акты",  ".pdf,.zip,.docx", "dep_chain"],
+    ["dep_statement", "Заявление в Роспатент, подписанное УКЭП",          ".pdf,.sig,.zip", "dep_statement"],
+    ["dep_cert",      "Свидетельство о госрегистрации ПО",                ".pdf,.png,.jpg,.jpeg", null],
+  ];
+
+  async function genDepon(kind, btn) {
+    btn.disabled = true; const t0 = btn.textContent; btn.textContent = "…";
+    try {
+      const res = await api.post(`/api/products/${id}/depon/${kind}`);
+      toast(`Сгенерировано: ${res.generated.title}`);
+      viewDocs(id);
+    } catch (e) { toast(e.message || "Ошибка генерации", true); btn.disabled = false; btn.textContent = t0; }
+  }
+
+  // Внутреннее сырьё авто-подготовки (листинг для фрагмента) не показываем и не считаем документом.
+  const isDeponRaw = (name) => /^dep_codefrag_listing\.txt$/i.test(name);
+  const deponRows = DEPON_ITEMS.map(([key, label, accept, genKind]) => {
+    const files = artifacts.filter((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name));
+    const done = files.length > 0;
+    const filesCell = files.length
+      ? el("div", {}, files.map((a) => el("div", { class: "mono", style: "margin:1px 0" }, [
+          el("a", { href: `/api/products/${id}/artifacts/file/${encodeURIComponent(a.name)}` },
+            a.name.slice(key.length + 1)),
+          el("a", { href: "#", style: "margin-left:8px;color:var(--fail)", onclick: async (e) => {
+            e.preventDefault();
+            if (confirm("Удалить файл?")) { await api.del(`/api/products/${id}/artifacts/${encodeURIComponent(a.name)}`); viewDocs(id); }
+          } }, "×"),
+        ])))
+      : el("span", { class: "muted" }, "—");
+    const actions = [uploader(id, key, "файл", accept, () => viewDocs(id))];
+    if (genKind) {
+      const gb = el("button", { class: "ghost", style: "margin-left:6px",
+        onclick: () => genDepon(genKind, gb) }, "Сгенерировать");
+      actions.push(gb);
+    }
+    return el("tr", {}, [
+      el("td", { style: "width:1%;white-space:nowrap" }, done ? "✅" : "☐"),
+      el("td", {}, label),
+      el("td", { style: "width:26%" }, filesCell),
+      el("td", { style: "width:1%;white-space:nowrap" }, el("div", { class: "row", style: "gap:4px;flex-wrap:nowrap" }, actions)),
+    ]);
+  });
+  const deponDone = DEPON_ITEMS.filter(([key]) => artifacts.some((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name))).length;
+
+  // Черновик реферата из карточки (свёрнут; для копирования при оформлении).
+  const referat = [
+    "РЕФЕРАТ программы для ЭВМ", "",
+    `Название программы: ${p.name || "—"}`,
+    `Правообладатель: ${rh.orgName || "—"} (ИНН ${rh.inn || "—"}, ОГРН ${rh.ogrn || "—"})`,
+    "Авторы: — ФИО разработчиков —",
+    "Язык программирования: — указать —",
+    `Операционные системы: ${(Array.isArray(t.supportedOS) ? t.supportedOS.join(", ") : t.supportedOS) || "—"}`,
+    "Объём программы: — напр. 12 МБ —", "",
+    "Аннотация:", p.description || "— функциональные характеристики —", "",
+    `Назначение: ${p.purpose || "— область применения —"}`,
+    "Графический интерфейс — на русском языке.",
+  ].join("\n");
+  const referatBox = el("textarea", { readonly: "readonly",
+    style: "width:100%;min-height:180px;font-family:Consolas,monospace;font-size:12px" }, referat);
+  const referatDraft = help("✍ Черновик реферата — скопировать и оформить в .docx", [
+    referatBox,
+    el("div", { class: "row", style: "margin-top:6px" }, [
+      el("button", { class: "ghost", onclick: async () => {
+        const ok = await copy(referat); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);
+      } }, "Копировать"),
+    ]),
+  ]);
+
+  app.append(el("div", { class: "panel" }, [
+    el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
+      el("h2", { style: "flex:1;margin:0" }, "Подготовка к депонированию (Роспатент)"),
+      el("span", { class: "muted" }, `Готово: ${deponDone}/${DEPON_ITEMS.length}`),
+    ]),
+    el("table", {}, [
+      el("tr", {}, [el("th", {}, ""), el("th", {}, "Документ"), el("th", {}, "Файлы"), el("th", {}, "")]),
+      ...deponRows,
+    ]),
+    el("div", { class: "spacer" }),
+    el("div", { class: "muted", style: "font-size:12px" },
+      `«Снимок версии кода» готовит «Мастер подготовки» на карточке; загрузить готовый файл сюда можно и вручную.`),
+    codefragHelp(),
+    referatDraft,
+  ]));
 }
 
 // ---------- отправка (монтажный лист подачи) ----------
@@ -1049,7 +915,7 @@ async function viewSubmit(id) {
   app.innerHTML = "";
   app.append(
     crumbs([{ text: "Продукты", href: "#/" }, { text: S.productName, href: `#/p/${id}` }, { text: "Отправка" }]),
-    gateStepper(id, stepMeta), screenTabs(id, "/submit"),
+    topNav(id, "/submit", stepMeta),
   );
 
   app.append(el("div", { class: "hint", html:
@@ -1239,6 +1105,7 @@ function viewAbout() {
     el("div", { class: "hint", html:
       "Значения с пометкой «СВЕРИТЬ» (сроки, коды классов, форматы вложений) проверяйте на " +
       "<span class='mono'>reestr.digital.gov.ru</span> и в действующей редакции ПП № 1236 перед подачей." }),
+    conditionsHelp(),
   ]));
 }
 
