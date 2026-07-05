@@ -107,7 +107,9 @@ function topNav(id, active, meta) {
       gateNodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
     }
     const status = gateStatus(g, meta);
-    const href = g.auto ? `#/p/${id}/checks` : `#/p/${id}/tracker/${g.id}`;
+    const href = g.auto ? `#/p/${id}/checks`
+      : g.link ? `#/p/${id}${g.link}`
+      : `#/p/${id}/tracker/${g.id}`;
     const statusText = { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status];
     gateNodes.push(el("a", { href, class: "step-circle " + status,
       title: `${g.id} ${g.title} — ${statusText} (${g.done}/${g.total})` }, g.id));
@@ -820,23 +822,27 @@ async function viewTracker(id, focusGateId) {
 
   let focusNode = null;
   tracker.gates.forEach((g) => {
+    const readOnly = g.auto || g.artifacts;   // выводится из проверок/артефактов
+    const autoTag = g.auto ? "из проверок" : g.artifacts ? "из документов" : null;
     const items = g.items.map((it) => {
       const cb = el("input", { type: "checkbox", ...(it.done ? { checked: "checked" } : {}),
-        ...(g.auto ? { disabled: "disabled" } : {}) });
-      if (!g.auto) cb.addEventListener("change", async () => {
+        ...(readOnly ? { disabled: "disabled" } : {}) });
+      if (!readOnly) cb.addEventListener("change", async () => {
         await api.put(`/api/products/${id}/tracker`, { items: { [it.id]: cb.checked } });
         toast("Отмечено"); viewTracker(id);
       });
-      return el("label", { class: "item" + (g.auto ? " auto" : "") }, [
+      return el("label", { class: "item" + (readOnly ? " auto" : "") }, [
         cb, el("span", {}, it.text),
-        g.auto ? el("span", { class: "auto-tag" }, "из проверок") : null,
+        autoTag ? el("span", { class: "auto-tag" }, autoTag) : null,
       ]);
     });
     const isFocus = focusGateId && g.id === focusGateId;
     const gateNode = el("div", { class: "gate" + (isFocus ? " focus" : "") }, [
       el("div", { class: "head", html:
         `<span class="gid">${esc(g.id)}</span> <span>${esc(g.title)}</span>` +
-        `<span class="pct">${g.done}/${g.total}${g.auto ? " · авто" : ""}</span>` }),
+        `<span class="pct">${g.done}/${g.total}${g.auto ? " · авто" : g.artifacts ? " · из документов" : ""}</span>` }),
+      g.artifacts ? el("div", { class: "muted", style: "font-size:12px;margin:2px 0 6px" },
+        "Пункты закрываются автоматически при загрузке/генерации файлов на вкладке «Документы».") : null,
       el("div", { class: "items" }, items),
     ]);
     if (isFocus) focusNode = gateNode;

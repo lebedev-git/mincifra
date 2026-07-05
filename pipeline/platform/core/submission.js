@@ -127,10 +127,12 @@ function buildNextActions(id, product, completeness, t, artifacts, report) {
   if (!report)
     actions.push({ kind: "checks", area: "Проверки", text: "Запустить технические проверки", hash: `#/p/${id}/checks` });
 
-  // Невыполненные ручные пункты трекера (без авто-гейтов).
+  // Невыполненные пункты трекера (без авто-G3). Гейт GD (депонирование) ведёт
+  // на «Документы», где эти пункты закрываются загрузкой/генерацией файлов.
   t.gates.filter((g) => !g.auto).forEach((g) => {
+    const hash = g.link ? `#/p/${id}${g.link}` : `#/p/${id}/tracker`;
     g.items.filter((it) => !it.done).forEach((it) => {
-      actions.push({ kind: "tracker", area: `${g.id} ${g.title}`, text: it.text, hash: `#/p/${id}/tracker` });
+      actions.push({ kind: g.artifacts ? "artifact" : "tracker", area: `${g.id} ${g.title}`, text: it.text, hash });
     });
   });
 
