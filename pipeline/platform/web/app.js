@@ -440,9 +440,9 @@ function onboardingPanel(clientUrl) {
       "Платформа управляется через Claude (MCP). Подключи клиента — и говори с платформой словами: " +
       "«создай продукт», «подготовь к Роспатенту», «прогони проверки»."),
     el("ol", { style: "line-height:1.9;margin:12px 0" }, [
-      el("li", {}, [el("a", { href: "/api/client.zip" }, "⬇ Скачать клиент (reestr-mcp.zip)")]),
-      el("li", {}, "Распаковать, вписать своё имя в .mcp.json — инструкция внутри (README)"),
-      el("li", {}, "Сказать Claude: «список продуктов через reestr-platform»"),
+      el("li", {}, [el("a", { href: "/api/client.zip" }, "⬇ Загрузить MCP-клиент"), " и распаковать (например, в C:\\reestr-mcp)"]),
+      el("li", {}, "Запустить Claude из этой папки — адрес платформы уже вписан в .mcp.json"),
+      el("li", {}, ["Сказать Claude: ", el("b", {}, "«старт»"), " — дальше он ведёт сам"]),
     ]),
     el("div", { class: "muted", style: "font-size:12px" },
       `Сервер: ${clientUrl || "этот адрес"} · экран обновится сам после подключения`),
@@ -472,7 +472,7 @@ async function viewDashboard() {
   const connPanel = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center" }, [
       el("h2", { style: "flex:1;margin:0" }, "Подключения"),
-      el("a", { class: "ghost", href: "/api/client.zip", style: "font-size:13px" }, "⬇ клиент для Claude"),
+      el("a", { class: "ghost", href: "/api/client.zip", style: "font-size:13px" }, "⬇ Загрузить MCP"),
     ]),
     el("div", { class: "row", style: "gap:8px;margin-top:8px;flex-wrap:wrap" },
       connRows.length ? connRows : [el("span", { class: "muted" }, "Пока никто не подключался по MCP")]),
@@ -491,7 +491,6 @@ async function viewDashboard() {
 
   const head = el("div", { class: "row", style: "align-items:center;margin-bottom:16px" }, [
     el("h2", { style: "margin:0;color:var(--blue);flex:1" }, `Продукты (${products.length})`),
-    el("button", { class: "ghost", onclick: createProduct }, "+ Вручную"),
   ]);
 
   const grid = el("div", { class: "grid" }, products.map((p) => {
@@ -514,13 +513,6 @@ async function viewDashboard() {
   app.append(head, empty || grid);
 }
 
-async function createProduct() {
-  const name = prompt("Название продукта:", "Новый продукт");
-  if (!name) return;
-  const { id } = await api.post("/api/products", { name });
-  toast("Продукт создан");
-  location.hash = `#/p/${id}`;
-}
 
 // ---------- карточка продукта (стадии «Карточка» и «Продукт») ----------
 // stage: "card" — юр. предпосылки, правообладатель, права, финансы (внешние факты —
@@ -915,96 +907,24 @@ async function viewDocs(id, forcePrep) {
   const hasPrepArtifacts = artifacts.some((a) => /^dep_(snapshot|referat|codefrag|statement)_/i.test(a.name));
   const prepared = hasPrepArtifacts && !forcePrep;
 
-  // --- Мастер: один экран «источник + кнопка» ---
-  // Платформа может работать на сервере, поэтому «путь на этом ПК» больше не главный
-  // сценарий. Источники по надёжности: ZIP с любого ПК → git-ссылка → путь на сервере.
-  const wizZip = el("input", { type: "file", accept: ".zip", style: "width:100%" });
-  const wizPath = el("input", { type: "text", value: "",
-    placeholder: "https://github.com/org/repo.git  или  /opt/projects/app", style: "width:100%" });
-  const wizNotes = el("textarea", { placeholder:
-    "Не обязательно: пара фраз о программе (что делает, для кого) — попадёт в реферат.",
-    style: "width:100%;min-height:56px" });
-  const wizProgress = el("div", { class: "muted", style: "font-size:12px;margin-top:8px" });
-  const isGitUrl = (s) => /^https?:\/\//i.test(s) || /^git@/i.test(s);
-  async function runWizard(btn) {
-    const zipFile = wizZip.files && wizZip.files[0];
-    const src = wizPath.value.trim();
-    if (!zipFile && !src) { toast("Выбери ZIP проекта или укажи git-ссылку", true); return; }
-    btn.disabled = true; const t0 = btn.textContent; btn.textContent = "Готовлю…";
-    const step = (s) => { wizProgress.textContent = s; };
-    try {
-      step("1/3 — читаю код, делаю снимок версии…");
-      let patch = null;
-      if (zipFile) {
-        // ZIP уезжает на сервер сырым телом; заметки — в query.
-        const buf = await zipFile.arrayBuffer();
-        const q = wizNotes.value ? `?notes=${encodeURIComponent(wizNotes.value)}` : "";
-        const resp = await api.request("POST", `/api/products/${id}/autofill${q}`, buf, true);
-        patch = resp.draft && resp.draft.patch;
-      } else if (isGitUrl(src)) {
-        // Git-ссылку клонирует сам сервер.
-        await api.post(`/api/products/${id}/prepare`, { repo: src });
-      } else {
-        // Путь на машине, где запущена платформа (локальный запуск / папка на сервере).
-        const resp = await api.post(`/api/products/${id}/autofill`, { path: src, notes: wizNotes.value });
-        patch = resp.draft && resp.draft.patch;
-      }
-      if (patch && Object.keys(patch).length) {
-        const fresh = (await api.get(`/api/products/${id}`)).product;
-        deepMergeObj(fresh, patch);
-        await api.put(`/api/products/${id}`, { product: fresh });
-      }
-      step("2/3 — генерирую документы (фрагмент кода, реферат)…");
-      const errs = [];
-      // Порядок важен: dep_codefrag фиксирует язык из листинга в карточку (и удаляет
-      // сырьё), поэтому реферат генерируем после него — с уже заполненным языком.
-      for (const kind of ["dep_snapshot", "dep_codefrag", "dep_referat"]) {
-        try { await api.post(`/api/products/${id}/depon/${kind}`); }
-        catch (e) { errs.push(`${kind}: ${e.message}`); }
-      }
-      step("3/3 — собираю монтажный лист…");
-      await api.post(`/api/products/${id}/rospatent/autofill`).catch(() => {});
-      toast("Готово — комплект для Госуслуг собран");
-      errs.forEach((m) => toast(m, true));
-      viewDocs(id);
-    } catch (e) {
-      wizProgress.textContent = "";
-      toast(e.message || "Не удалось подготовить", true);
-      btn.disabled = false; btn.textContent = t0;
-    }
-  }
-  const wizBtn = el("button", { onclick: (e) => runWizard(e.currentTarget) }, "▶ Подготовить к подаче");
-  const wizardPanel = el("div", {}, [
-    el("div", { class: "hint" },
-      "Загрузи ZIP с исходным кодом (или дай git-ссылку) — платформа сама сделает снимок версии, " +
-      "фрагмент кода, реферат и заявление, и покажет поля для формы на Госуслугах. " +
-      "Больше ничего заполнять не нужно."),
-    el("label", { class: "field" }, [
-      el("span", { style: "display:block;margin-bottom:4px" }, "ZIP-архив проекта (надёжный способ с любого ПК)"), wizZip]),
-    el("label", { class: "field" }, [
-      el("span", { style: "display:block;margin-bottom:4px" },
-        "…или git-ссылка / путь к папке на сервере платформы"), wizPath]),
-    el("label", { class: "field" }, [
-      el("span", { style: "display:block;margin-bottom:4px" }, "Коротко о программе (не обязательно)"), wizNotes]),
-    el("div", { class: "row", style: "margin-top:6px" }, [wizBtn]),
-    wizProgress,
-  ]);
-
+  // MCP-first: подготовку делает Claude через MCP. Ручной мастер убран —
+  // человек подключает клиента и говорит «старт», всё остальное делает агент.
   if (!prepared) {
-    // MCP-first: главный путь — сказать Claude «подготовь к Роспатенту». Мастер
-    // остаётся запасным ходом (нет Claude под рукой / хочется руками) — за спойлером.
-    const mcpHint = el("div", { class: "panel" }, [
+    const mcpPanel = el("div", { class: "panel" }, [
       el("h2", { style: "margin:0 0 8px" }, "Подача в Роспатент"),
       el("div", { class: "hint" },
-        "Скажи Claude: «подготовь этот продукт к Роспатенту, репозиторий …» — " +
-        "платформа сделает снимок версии, фрагмент кода, реферат и поля для Госуслуг. " +
-        "Готовые документы появятся здесь."),
-      el("details", { class: "help" }, [
-        el("summary", {}, "Подготовить вручную (без Claude)"),
-        el("div", { class: "body" }, [wizardPanel]),
+        "Документы готовит Claude, подключённый к платформе по MCP. Подключи клиента " +
+        "и скажи «старт» — он сам сделает снимок версии, фрагмент кода, реферат и поля для Госуслуг. " +
+        "Готовые документы появятся на этом экране."),
+      el("ol", { style: "line-height:2;margin:12px 0" }, [
+        el("li", {}, [el("a", { href: "/api/client.zip" }, "⬇ Загрузить MCP-клиент"), " и распаковать (например, в C:\reestr-mcp)"]),
+        el("li", {}, "Запустить Claude из этой папки (в .mcp.json уже вписан адрес платформы)"),
+        el("li", {}, ["Сказать Claude: ", el("b", {}, "«старт»"), " — дальше он ведёт сам"]),
       ]),
+      el("div", { class: "muted", style: "font-size:12px" },
+        "Экран обновится, когда документы будут готовы."),
     ]);
-    renderShell(id, "depon", tracker, name, "Документы", [mcpHint]);
+    renderShell(id, "depon", tracker, name, "Документы", [mcpPanel]);
     return;
   }
 
