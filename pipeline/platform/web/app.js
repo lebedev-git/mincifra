@@ -849,22 +849,40 @@ async function viewDocs(id, forcePrep) {
   const hasPrepArtifacts = artifacts.some((a) => /^dep_(snapshot|referat|codefrag|statement)_/i.test(a.name));
   const prepared = hasPrepArtifacts && !forcePrep;
 
-  // --- Мастер: один экран «путь + кнопка» ---
+  // --- Мастер: один экран «источник + кнопка» ---
+  // Платформа может работать на сервере, поэтому «путь на этом ПК» больше не главный
+  // сценарий. Источники по надёжности: ZIP с любого ПК → git-ссылка → путь на сервере.
+  const wizZip = el("input", { type: "file", accept: ".zip", style: "width:100%" });
   const wizPath = el("input", { type: "text", value: "",
-    placeholder: "C:\\путь\\к\\папке\\проекта", style: "width:100%" });
+    placeholder: "https://github.com/org/repo.git  или  /opt/projects/app", style: "width:100%" });
   const wizNotes = el("textarea", { placeholder:
     "Не обязательно: пара фраз о программе (что делает, для кого) — попадёт в реферат.",
     style: "width:100%;min-height:56px" });
   const wizProgress = el("div", { class: "muted", style: "font-size:12px;margin-top:8px" });
+  const isGitUrl = (s) => /^https?:\/\//i.test(s) || /^git@/i.test(s);
   async function runWizard(btn) {
+    const zipFile = wizZip.files && wizZip.files[0];
     const src = wizPath.value.trim();
-    if (!src) { toast("Укажи путь к папке проекта", true); return; }
+    if (!zipFile && !src) { toast("Выбери ZIP проекта или укажи git-ссылку", true); return; }
     btn.disabled = true; const t0 = btn.textContent; btn.textContent = "Готовлю…";
     const step = (s) => { wizProgress.textContent = s; };
     try {
       step("1/3 — читаю код, делаю снимок и SHA-256…");
-      const resp = await api.post(`/api/products/${id}/autofill`, { path: src, notes: wizNotes.value });
-      const patch = resp.draft && resp.draft.patch;
+      let patch = null;
+      if (zipFile) {
+        // ZIP уезжает на сервер сырым телом; заметки — в query.
+        const buf = await zipFile.arrayBuffer();
+        const q = wizNotes.value ? `?notes=${encodeURIComponent(wizNotes.value)}` : "";
+        const resp = await api.request("POST", `/api/products/${id}/autofill${q}`, buf, true);
+        patch = resp.draft && resp.draft.patch;
+      } else if (isGitUrl(src)) {
+        // Git-ссылку клонирует сам сервер.
+        await api.post(`/api/products/${id}/prepare`, { repo: src });
+      } else {
+        // Путь на машине, где запущена платформа (локальный запуск / папка на сервере).
+        const resp = await api.post(`/api/products/${id}/autofill`, { path: src, notes: wizNotes.value });
+        patch = resp.draft && resp.draft.patch;
+      }
       if (patch && Object.keys(patch).length) {
         const fresh = (await api.get(`/api/products/${id}`)).product;
         deepMergeObj(fresh, patch);
@@ -893,10 +911,14 @@ async function viewDocs(id, forcePrep) {
   const wizardPanel = el("div", { class: "panel" }, [
     el("h2", { style: "margin:0 0 8px" }, "Подача в Роспатент"),
     el("div", { class: "hint" },
-      "Укажи папку с исходным кодом — платформа сама сделает снимок с SHA-256, фрагмент кода, " +
-      "реферат и заявление, и покажет поля для формы на Госуслугах. Больше ничего заполнять не нужно."),
+      "Загрузи ZIP с исходным кодом (или дай git-ссылку) — платформа сама сделает снимок с SHA-256, " +
+      "фрагмент кода, реферат и заявление, и покажет поля для формы на Госуслугах. " +
+      "Больше ничего заполнять не нужно."),
     el("label", { class: "field" }, [
-      el("span", { style: "display:block;margin-bottom:4px" }, "Путь к папке проекта на этом ПК"), wizPath]),
+      el("span", { style: "display:block;margin-bottom:4px" }, "ZIP-архив проекта (надёжный способ с любого ПК)"), wizZip]),
+    el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" },
+        "…или git-ссылка / путь к папке на сервере платформы"), wizPath]),
     el("label", { class: "field" }, [
       el("span", { style: "display:block;margin-bottom:4px" }, "Коротко о программе (не обязательно)"), wizNotes]),
     el("div", { class: "row", style: "margin-top:6px" }, [wizBtn]),
