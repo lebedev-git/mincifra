@@ -17,3 +17,13 @@ _extract/
 Thumbs.db
 .DS_Store
 *.log
+
+# Приватное / клиентские данные — не для публичного репозитория
+rsk_*.json
+rsk_*.zip
+rsk_*.log
+rospatent-mayak/
+.mcp.json
+.claude/
+playwright-test-homepage.md
+*.png

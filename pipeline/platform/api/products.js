@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const store = require("../core/store");
 const tracker = require("../core/tracker");
+const rights = require("../core/rights");
 const { cardCompleteness } = require("../core/readiness");
 const { readJsonBody, sendJson } = require("../core/http-util");
 
@@ -74,6 +75,7 @@ function summary(id, product) {
     percent: t.percent,
     checksOverall: t.checksOverall,
     hasReport: t.hasReport,
+    rightsState: rights.computeState(product),
   };
 }
 
@@ -102,7 +104,9 @@ function register(router) {
 
   router.get("/api/products/:id", (req, res) => {
     const product = store.getProduct(req.params.id);
-    sendJson(res, 200, { id: req.params.id, product });
+    // Вычисляемый статус права (read-model, в БД не пишется) — единый источник core/rights.js.
+    const state = rights.computeState(product);
+    sendJson(res, 200, { id: req.params.id, product, rights: { state, meta: rights.stateMeta(state) } });
   });
 
   // Полнота карточки (какие обязательные поля ещё не заполнены) — питает шаг-индикатор в UI.

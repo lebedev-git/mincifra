@@ -13,13 +13,21 @@ function joinList(a) { return Array.isArray(a) ? a.join(", ") : val(a); }
 // Абзац «Сведения о соответствии ПП № 1236» — текстом для вставки на портал.
 // Логика согласована с docCompliance в ../../03_docs/dossier.js.
 function complianceText(p) {
-  const rh = p.rightholder || {}, f = p.finance || {}, s = p.support || {}, t = p.tech || {}, pr = p.product || {};
+  const rh = p.rightholder || {}, f = p.finance || {}, s = p.support || {}, t = p.tech || {}, pr = p.product || {}, r = p.rights || {};
   const pct = (f.annualRevenueProduct > 0)
     ? ((f.annualForeignPayments / f.annualRevenueProduct) * 100).toFixed(2) + "%"
     : "—";
+  // Основание права: Схема B — свидетельство на автора-физлицо + отчуждение права ООО,
+  // зарегистрированное в ФИПС (ст.1232/1262 п.5). Иначе — служебные произведения/договоры.
+  let rightsBasis;
+  if (r.basis === "rospatent") {
+    rightsBasis = `свидетельство Роспатента на автора, отчуждено правообладателю по договору (ст. 1234 ГК)${r.transferRegistered === true ? `, переход зарегистрирован в ФИПС № ${val(r.transferRegistrationNumber)} (ст. 1232, 1262 п.5 ГК)` : " — переход подлежит регистрации в ФИПС (ст. 1232, 1262 п.5 ГК)"}`;
+  } else {
+    rightsBasis = "служебные произведения / договоры";
+  }
   const lines = [
     `Правообладатель — российское лицо ${val(rh.orgName)} (ИНН ${val(rh.inn)}); суммарная доля РФ-контроля ${val(rh.ruControlSharePercent)}% (> 50%).`,
-    `Исключительное право на ПО принадлежит правообладателю (${p.rights && p.rights.basis === "rospatent" ? "свидетельство Роспатента" : "служебные произведения / договоры"}).`,
+    `Исключительное право на ПО принадлежит правообладателю (${rightsBasis}).`,
     `Доля выплат иностранным правообладателям — ${pct} выручки по продукту (требование: строго < 30%).`,
     `Сопровождение и техподдержка осуществляются на территории РФ ${s.hasForeignControl === false ? "без иностранного контроля" : "(уточнить отсутствие иностранного контроля)"}.`,
     `Продукт не управляется и не обновляется принудительно из-за пределов РФ; инфраструктура размещена ${t.infraLocation === "RU" ? "в РФ" : "(уточнить локацию)"}.`,
@@ -64,6 +72,18 @@ function buildSubmission(id) {
       return { label: "Правоустанавливающие документы (Роспатент / служебные произведения)",
         ready: has, manual: !has, note: has ? "загружено в разделе «Депонирование»" : null };
     })(),
+    (() => {
+      const has = hasArtifact("dep_assign_contract") || hasArtifact("dep_assign_act");
+      return { label: "Договор отчуждения права + акт (физлицо → ООО, ст. 1234 ГК)",
+        ready: has, manual: !has, note: has ? "раздел «Отчуждение права»" : "оформить, если право на автора-физлицо" };
+    })(),
+    (() => {
+      const hasDoc = hasArtifact("dep_assign_register");
+      const registered = !!(p.rights && p.rights.transferRegistered === true);
+      return { label: "Регистрация перехода права в ФИПС (ст. 1232, 1262 п.5 ГК)",
+        ready: registered, manual: !registered,
+        note: registered ? `зарегистрировано № ${val((p.rights || {}).transferRegistrationNumber)}` : (hasDoc ? "заявление готово — подать в ФИПС" : "обязательна для зарег. ПрЭВМ") };
+    })(),
     { label: "Выписка ЕГРЮЛ и структура владения", ready: false, manual: true },
     { label: "Бухгалтерская справка о выплатах иностранцам < 30%",
       ready: dossier.some((d) => d.name.includes("Справка")),
@@ -83,6 +103,7 @@ function buildSubmission(id) {
   ].map((a) => ({ ...a, downloadName: a.file ? a.file.name : null }));
 
   const steps = [
+    "Убедиться, что цепочка прав замкнута: свидетельство Роспатента → договор отчуждения → регистрация перехода в ФИПС (ст. 1232). Без регистрации перехода реестр завернёт заявку.",
     "Войти на reestr.digital.gov.ru через ЕСИА под учётной записью организации.",
     "Создать заявление на включение сведений о ПО в реестр.",
     "Заполнить карточку ПО значениями из таблицы выше (копировать по полям).",
@@ -95,7 +116,7 @@ function buildSubmission(id) {
 
   const t = tracker.buildTracker(id);
   const completeness = cardCompleteness(p);
-  const nextActions = buildNextActions(id, p, completeness, t, artifacts, report);
+  const nextActions = buildNextActions(id, t);
 
   return {
     productId: id,
@@ -109,33 +130,17 @@ function buildSubmission(id) {
   };
 }
 
-// Единый список «что осталось за человеком»: незаполненные поля карточки,
-// отсутствующие артефакты и невыполненные ручные пункты трекера (авто-G3 —
-// не действие человека, исключаем). kind → к какой вкладке ведёт действие.
-function buildNextActions(id, product, completeness, t, artifacts, report) {
+// Единый список «что осталось за человеком» — это все незакрытые пункты стадий
+// маршрута. Пункт закрыт проекцией данных, поэтому «незакрыт» = нужно заполнить
+// поле / загрузить артефакт / прогнать проверку. hash → к стадии, где это делают.
+function buildNextActions(id, t) {
   const actions = [];
-
-  completeness.missing.forEach((m) => {
-    actions.push({ kind: "card", area: m.section, text: `Заполнить: ${m.label}`, hash: `#/p/${id}` });
-  });
-
-  const hasArtifact = (hint) => artifacts.some((a) => a.name.toLowerCase().includes(hint));
-  if (!hasArtifact("sbom") && !hasArtifact("cyclonedx") && !hasArtifact("bom"))
-    actions.push({ kind: "artifact", area: "Проверки", text: "Загрузить SBOM (состав ПО)", hash: `#/p/${id}` });
-  if (!hasArtifact(".har") && !hasArtifact("network"))
-    actions.push({ kind: "artifact", area: "Проверки", text: "Снять и загрузить HAR (сетевой трафик)", hash: `#/p/${id}` });
-  if (!report)
-    actions.push({ kind: "checks", area: "Проверки", text: "Запустить технические проверки", hash: `#/p/${id}/checks` });
-
-  // Невыполненные пункты трекера (без авто-G3). Гейт GD (депонирование) ведёт
-  // на «Документы», где эти пункты закрываются загрузкой/генерацией файлов.
-  t.gates.filter((g) => !g.auto).forEach((g) => {
-    const hash = g.link ? `#/p/${id}${g.link}` : `#/p/${id}/tracker`;
-    g.items.filter((it) => !it.done).forEach((it) => {
-      actions.push({ kind: g.artifacts ? "artifact" : "tracker", area: `${g.id} ${g.title}`, text: it.text, hash });
+  t.stages.forEach((s) => {
+    const hash = `#/p/${id}${s.link || ""}`;
+    s.items.filter((it) => !it.done).forEach((it) => {
+      actions.push({ kind: "stage", area: s.title, text: it.text, hash });
     });
   });
-
   return actions;
 }
 

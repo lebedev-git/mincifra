@@ -32,7 +32,7 @@ header.topbar .sub { color: var(--light); font-size: 12px; }
 header.topbar nav { margin-left: auto; display: flex; gap: 14px; }
 header.topbar nav a { color: #fff; font-size: 13px; }
 
-.container { max-width: 1040px; margin: 0 auto; padding: 20px; }
+.container { max-width: 1440px; margin: 0 auto; padding: 20px 32px; }
 
 .panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
@@ -42,7 +42,7 @@ header.topbar nav a { color: #fff; font-size: 13px; }
 .panel h3 { margin: 16px 0 8px; font-size: 14px; color: var(--blue-2); }
 
 /* Словарь: комфортное чтение длинного текста */
-.glossary { max-width: 820px; line-height: 1.55; }
+.glossary { max-width: 820px; margin-left: auto; margin-right: auto; line-height: 1.55; }
 .glossary h1 { font-size: 20px; color: var(--blue); margin: 0 0 6px; }
 .glossary h2 { font-size: 16px; color: var(--blue); margin: 22px 0 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 .glossary h3 { font-size: 14px; color: var(--blue-2); margin: 14px 0 6px; }
@@ -53,6 +53,34 @@ header.topbar nav a { color: #fff; font-size: 13px; }
 .glossary code { font-family: Consolas, "Courier New", monospace; font-size: 12px;
   background: #F1F3F5; padding: 1px 5px; border-radius: 3px; }
 .glossary strong { color: var(--ink, #1a1a1a); }
+
+/* Нормативный справочник: сайдбар с разделами + прокручиваемый контент */
+.normative { max-width: none; }
+.normative-layout { display: flex; gap: 24px; align-items: flex-start; }
+.normative-toc { flex: 0 0 220px; position: sticky; top: 12px; display: flex; flex-direction: column;
+  gap: 2px; border-right: 1px solid var(--line); padding-right: 14px; }
+.normative-toc-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted, #8a8f98); margin-bottom: 6px; }
+.normative-toc a { font-size: 13px; padding: 5px 6px; border-radius: 4px; color: var(--ink, #1a1a1a);
+  text-decoration: none; line-height: 1.3; }
+.normative-toc a:hover { background: #F1F3F5; color: var(--blue); }
+.normative-content { flex: 1 1 auto; min-width: 0; max-width: 900px; line-height: 1.55; }
+.normative-section { margin-bottom: 28px; padding-bottom: 8px; }
+.normative-section h1 { font-size: 20px; color: var(--blue); margin: 0 0 6px; }
+.normative-section h2 { font-size: 17px; color: var(--blue); margin: 0 0 10px; }
+.normative-section h3 { font-size: 14px; color: var(--blue-2); margin: 16px 0 6px; }
+.normative-section p { margin: 6px 0; }
+.normative-section ul { margin: 6px 0 12px; padding-left: 20px; }
+.normative-section li { margin: 3px 0; }
+.normative-section hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.normative-section code { font-family: Consolas, "Courier New", monospace; font-size: 12px;
+  background: #F1F3F5; padding: 1px 5px; border-radius: 3px; }
+.normative-section strong { color: var(--ink, #1a1a1a); }
+.normative-section table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 13px; }
+.normative-section th, .normative-section td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; }
+.normative-section th { background: #F7F8FA; color: var(--blue-2); }
+.normative-section .md-note { background: #FFF8E1; border-left: 3px solid #F5A623; padding: 8px 12px;
+  margin: 10px 0; border-radius: 0 4px 4px 0; }
 
 .row { display: flex; gap: 16px; flex-wrap: wrap; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
@@ -77,6 +105,17 @@ header.topbar nav a { color: #fff; font-size: 13px; }
 .step-circle.active { border-color: var(--warn); color: var(--warn); background: #fffaf0; }
 .step-circle.done { border-color: var(--pass); background: var(--pass); color: #fff; }
 .step-circle.blocked { border-color: var(--fail); background: var(--fail); color: #fff; }
+/* Активная стадия — кольцо вокруг кружка степпера. */
+.step-circle.current { box-shadow: 0 0 0 3px rgba(46, 84, 150, .22); }
+
+/* ---------- Маршрут-стадии: одна широкая колонка контента ---------- */
+.product-layout { display: block; }
+.product-main { min-width: 0; }
+
+/* Поле-чекбокс (внешние факты: УКЭП/ЕСИА/ЕНС/ПП325). */
+label.field.chk-field { display: flex; align-items: flex-start; gap: 9px; }
+label.field.chk-field input { width: auto; margin-top: 2px; }
+label.field.chk-field > span:first-of-type { color: var(--text); font-size: 13px; margin: 0; }
 
 /* Подсветка гейта, к которому перешли кликом со степпера на другом экране. */
 .gate.focus { border-color: var(--blue-2); box-shadow: 0 0 0 3px rgba(46, 84, 150, .18); }

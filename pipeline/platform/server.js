@@ -25,6 +25,7 @@ const router = new Router();
   require("./api/docs"),
   require("./api/tracker"),
   require("./api/submission"),
+  require("./api/rospatent"),
   require("./api/reference"),
   require("./api/egrul"),
   require("./api/profile"),

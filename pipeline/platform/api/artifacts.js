@@ -4,6 +4,7 @@
 // kind ∈ { sbom, har }. Имя файла берётся из ?name, иначе — дефолтное по kind.
 
 const store = require("../core/store");
+const { spawn } = require("child_process");
 const { readBody, sendJson, sendFile, errWithStatus } = require("../core/http-util");
 
 // kind → дефолтное имя. sbom/har — для авто-проверок; rights и dep_* — документы
@@ -23,7 +24,19 @@ function normalizeName(kind, name) {
 
 function register(router) {
   router.get("/api/products/:id/artifacts", (req, res) => {
-    sendJson(res, 200, { artifacts: store.listArtifacts(req.params.id) });
+    sendJson(res, 200, {
+      artifacts: store.listArtifacts(req.params.id),
+      dir: store.artifactsDir(req.params.id),
+    });
+  });
+
+  // Открыть папку артефактов в проводнике (платформа локальная — сервер и браузер на одном ПК).
+  router.post("/api/products/:id/artifacts/open-folder", (req, res) => {
+    const dir = store.artifactsDir(req.params.id);
+    const opener = process.platform === "win32" ? "explorer"
+      : process.platform === "darwin" ? "open" : "xdg-open";
+    spawn(opener, [dir], { detached: true, stdio: "ignore" }).unref();
+    sendJson(res, 200, { opened: dir });
   });
 
   // Скачивание ранее загруженного артефакта (в т.ч. свидетельства Роспатента).

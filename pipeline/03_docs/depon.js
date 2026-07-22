@@ -30,40 +30,34 @@ function fmtBytes(n) {
 }
 
 // ---------- Реферат программы для ЭВМ ----------
-function docReferat(pr) {
-  const p = pr.product || {}, rh = pr.rightholder || {}, t = pr.tech || {}, r = pr.rights || {};
-  const authors = asList(r.authors);
+// ctx.author — автор-физлицо из профиля платформы (Схема B: депонирование на физлицо,
+// он же правообладатель на момент подачи). Карточный rightholder (ООО) здесь не участвует.
+function applicantName(ctx) {
+  const a = (ctx && ctx.author) || {};
+  return a.fullName || "— указать ФИО автора в Профиле —";
+}
+function docReferat(pr, ctx = {}) {
+  const p = pr.product || {}, t = pr.tech || {};
   const langs = asList(p.programmingLanguages);
   const c = [];
-  c.push(...titleBlock("РЕФЕРАТ", "программы для ЭВМ", [`Дата: ${today()}`]));
-  c.push(sp(200));
-  c.push(tbl([3400, 5960], ["Поле", "Значение"], [
-    ["Название программы", p.name || "____"],
-    ["Правообладатель", `${rh.orgName || "____"} (ИНН ${rh.inn || "____"}, ОГРН ${rh.ogrn || "____"})`],
-    ["Автор(ы)", authors.length ? authors.join(", ") : "— указать ФИО —"],
-    ["Язык(и) программирования", langs.length ? langs.join(", ") : "— указать —"],
-    ["Операционные системы", asList(t.supportedOS).join(", ") || "— указать —"],
-    ["Объём программы", "— указать (напр. 12 МБ) —"],
-    ["Год создания", String(new Date().getFullYear())],
-  ]));
-  c.push(sp());
-  c.push(H1("Аннотация"));
+  c.push(...titleBlock("РЕФЕРАТ", p.name || "____", []));
+  c.push(sp(120));
   c.push(P(p.description || "— описание функциональных характеристик —"));
   c.push(P([B("Назначение: "), R(p.purpose || "— область применения —")]));
+  c.push(P([B("Язык программирования: "), R(langs.length ? langs.join(", ") : "— указать —"), R(".")]));
+  c.push(P([B("Операционные системы: "), R(asList(t.supportedOS).join(", ") || "— указать —"), R(".")]));
   c.push(P([B("Графический интерфейс: "), R("на русском языке.")]));
-  c.push(sp());
-  c.push(note("Заполнить вручную", [R("Поля «— указать —» и объём программы вписать перед подачей. Реферат для формы госрегистрации ДоЭВМ (Роспатент/ФИПС).")]));
   return c;
 }
 
 // ---------- Акт фиксации версии (снимок кода + хеш) ----------
 function docSnapshotAct(pr, ctx = {}) {
-  const p = pr.product || {}, rh = pr.rightholder || {};
+  const p = pr.product || {};
   const c = [];
   c.push(...titleBlock("АКТ ФИКСАЦИИ ВЕРСИИ", "исходного кода программы для ЭВМ", [`Дата: ${today()}`]));
   c.push(sp(200));
   c.push(P([R("Настоящий акт фиксирует версию исходного кода программы "), B(p.name || "____"),
-    R(", права на которую принадлежат "), B(`${rh.orgName || "____"} (ИНН ${rh.inn || "____"})`),
+    R(", автором и правообладателем которой является "), B(applicantName(ctx)),
     R(". Контрольная сумма подтверждает неизменность зафиксированной версии на указанную дату.")]));
   c.push(sp());
   c.push(tbl([3400, 5960], ["Параметр", "Значение"], [
@@ -77,7 +71,7 @@ function docSnapshotAct(pr, ctx = {}) {
   c.push(sp());
   c.push(P([B("Версия зафиксирована. "), R("Хранить архив и настоящий акт совместно — они образуют доказательство версии на дату.")]));
   c.push(sp(240));
-  c.push(P([R("Уполномоченное лицо: _______________________ / "), B(rh.signatory ? rh.signatory.name : "___________________"), R("  М.П.")]));
+  c.push(P([R("Автор / правообладатель: _______________________ / "), B(applicantName(ctx)), R("")]));
   c.push(sp());
   c.push(note("Что это даёт", [R("Акт с SHA-256 — техническое доказательство «этот код был у нас на эту дату». Не заменяет свидетельство Роспатента, но усиливает цепочку прав и полезен при аудите подозрения.")]));
   return c;
@@ -118,19 +112,18 @@ function docChain(pr) {
   return c;
 }
 
-// ---------- Фрагмент исходного кода (до 70 страниц) ----------
-// По правилу Роспатента депонируется не весь код, а реферат + фрагмент листинга
-// объёмом не более 70 страниц. Если строк много — берём первые 35 и последние 35
-// страниц. ctx.listing — собранный текст исходников (из авто-подготовки).
+// ---------- Фрагмент исходного кода (до 50 страниц) ----------
+// По рекомендации Роспатента/ФИПС депонируется не весь код, а реферат + фрагмент
+// листинга объёмом не более 50 страниц. Если строк много — берём первые 25 и
+// последние 25 страниц. ctx.listing — собранный текст исходников (из авто-подготовки).
 const LINES_PER_PAGE = 45;   // ориентировочно строк моноширинного текста на A4
-const MAX_PAGES = 70;
-const HALF_PAGES = 35;
+const MAX_PAGES = 50;
+const HALF_PAGES = 25;
 
 function docCodeFragment(pr, ctx = {}) {
-  const p = pr.product || {}, rh = pr.rightholder || {};
+  const p = pr.product || {};
   const c = [];
-  c.push(...titleBlock("ФРАГМЕНТ ИСХОДНОГО КОДА", p.name || "____",
-    [`Правообладатель: ${rh.orgName || "____"}`, `Дата: ${today()}`]));
+  c.push(...titleBlock("ФРАГМЕНТ ИСХОДНОГО КОДА", p.name || "____", []));
   c.push(pageBreak());
 
   const raw = String(ctx.listing || "");
@@ -146,10 +139,10 @@ function docCodeFragment(pr, ctx = {}) {
   if (totalPages <= MAX_PAGES) {
     lines = allLines;
   } else {
-    // Первые 35 страниц + маркер + последние 35 страниц.
+    // Первые 25 страниц + маркер + последние 25 страниц.
     const head = allLines.slice(0, HALF_PAGES * LINES_PER_PAGE);
     const tail = allLines.slice(allLines.length - HALF_PAGES * LINES_PER_PAGE);
-    lines = [...head, "", "/* … середина листинга опущена (правило ≤ 70 страниц Роспатента) … */", "", ...tail];
+    lines = [...head, "", "/* … середина листинга опущена (правило ≤ 50 страниц Роспатента) … */", "", ...tail];
     truncated = true;
   }
 
@@ -170,11 +163,12 @@ function docCodeFragment(pr, ctx = {}) {
 }
 
 // ---------- Заявление в Роспатент (форма ДоЭВМ) ----------
-function docStatement(pr) {
-  const p = pr.product || {}, rh = pr.rightholder || {}, r = pr.rights || {};
-  const authors = asList(r.authors);
+// Заявитель — автор-физлицо (Схема B): подача через Госуслуги под ЕСИА/УКЭП физлица.
+function docStatement(pr, ctx = {}) {
+  const p = pr.product || {};
+  const a = (ctx && ctx.author) || {};
+  const who = applicantName(ctx);
   const langs = asList(p.programmingLanguages);
-  const sig = rh.signatory || {};
   const c = [];
   c.push(...titleBlock("ЗАЯВЛЕНИЕ", "о государственной регистрации программы для ЭВМ", [`Дата: ${today()}`]));
   c.push(sp(160));
@@ -182,22 +176,21 @@ function docStatement(pr) {
   c.push(sp());
   c.push(tbl([3400, 5960], ["Поле формы", "Значение"], [
     ["Название программы", p.name || "____"],
-    ["Правообладатель", rh.orgName || "____"],
-    ["ОГРН / ИНН", `${rh.ogrn || "____"} / ${rh.inn || "____"}`],
-    ["Адрес правообладателя", rh.address || "____"],
-    ["Автор(ы)", authors.length ? authors.join("; ") : "— указать ФИО —"],
+    ["Заявитель / правообладатель", who],
+    ["СНИЛС заявителя", a.snils || "— указать в Профиле —"],
+    ["Адрес места жительства", a.address || "— указать в Профиле —"],
+    ["Автор", who],
     ["Язык(и) программирования", langs.length ? langs.join(", ") : "— указать —"],
     ["Реферат", "прилагается (см. отдельный документ)"],
-    ["Идентифицирующие материалы", "фрагмент исходного кода (до 70 стр.), прилагается"],
+    ["Идентифицирующие материалы", "фрагмент исходного кода (до 50 стр.), прилагается"],
   ]));
   c.push(sp());
   c.push(P([R("Прошу зарегистрировать указанную программу для ЭВМ и внести сведения в Реестр программ для ЭВМ.")]));
   c.push(sp(240));
-  c.push(P([R("Руководитель: "), B(sig.name || "___________________"),
-    R(sig.position ? ` (${sig.position})` : ""), R("  _______________  М.П.")]));
-  c.push(P([R("Заявление подписывается УКЭП организации при подаче на "), B("fips.ru"), R(".")]));
+  c.push(P([R("Заявитель: "), B(who), R("  _______________")]));
+  c.push(P([R("Заявление подаётся через "), B("Госуслуги"), R(" под учётной записью физлица (ЕСИА/УКЭП).")]));
   c.push(sp());
-  c.push(note("Пошлина", [[R("Госпошлина за регистрацию программы для ЭВМ — "), B("СВЕРИТЬ на fips.ru"), R(" (ориентир ≈ 4500 ₽ для юрлица).")]]));
+  c.push(note("Пошлина", [[R("Госпошлина за регистрацию программы для ЭВМ — "), B("СВЕРИТЬ на fips.ru"), R(" (ориентир ≈ 3000 ₽ для физлица).")]]));
   return c;
 }
 
@@ -220,7 +213,10 @@ async function buildDeponDoc(kind, product, ctx = {}) {
   const short = safeFileName((product.product && product.product.shortName) || "product");
   const fileName = `${def.file}_${short}.docx`;
   const children = def.make(product, ctx);
-  const buffer = await buildBuffer(children, { title: def.title, header: `${def.title} · ${short}` });
+  // Подаваемые в Роспатент документы (реферат, фрагмент) — без служебного колонтитула
+  // сверху: в официальном пакете внутренние пометки неуместны. Нумерация страниц остаётся.
+  const clean = def.kind === "dep_referat" || def.kind === "dep_codefrag";
+  const buffer = await buildBuffer(children, { title: def.title, header: clean ? false : `${def.title} · ${short}` });
   return { fileName, buffer, title: def.title };
 }
 

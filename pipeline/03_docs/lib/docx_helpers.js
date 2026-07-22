@@ -188,7 +188,7 @@ function buildBuffer(children, { title, header } = {}) {
     sections: [{
       properties: { page: { size: { width: 11906, height: 16838 },
         margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } } },
-      headers: { default: new Header({ children: [new Paragraph({
+      headers: header === false ? undefined : { default: new Header({ children: [new Paragraph({
         alignment: AlignmentType.RIGHT,
         border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: GREY, space: 4 } },
         children: [new TextRun({ text: header || title || "", size: 16, color: "808080" })],

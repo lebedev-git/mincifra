@@ -54,10 +54,32 @@ async function generate(id, kind) {
     }
   }
 
+  // Автор-физлицо из профиля — правообладатель/заявитель во всех документах (Схема B).
+  ctx.author = (store.getProfile() || {}).author || {};
+
   const { fileName, buffer, title } = await buildDeponDoc(kind, product, ctx);
   // Имя артефакта: kind_<файл>.docx — префикс группирует по пункту трекера.
   const artifactName = fileName.toLowerCase().startsWith(kind + "_") ? fileName : `${kind}_${fileName}`;
+  // Повторная генерация заменяет прежний документ, а не копит дубли: имя файла
+  // содержит название продукта и при его смене меняется. Архивы (.zip) не трогаем.
+  for (const a of store.listArtifacts(id)) {
+    if (a.name.toLowerCase().startsWith(kind + "_") && /\.docx$/i.test(a.name) && a.name !== artifactName) {
+      fs.unlinkSync(store.artifactPath(id, a.name));
+    }
+  }
   const rel = store.saveArtifact(id, artifactName, buffer);
+
+  // Сырьё листинга больше не нужно после успешной генерации фрагмента — удаляем,
+  // чтобы не путать пользователя тяжёлым служебным файлом в папке артефактов.
+  // Повторная генерация фрагмента потребует заново прогнать мастер подготовки.
+  if (def.needsListing) {
+    // Перед удалением фиксируем выводимые из листинга поля (язык программирования
+    // и пр.) в карточку — иначе автоопределению будет не из чего считать.
+    try { require("./rospatent").autofill(id); } catch (_) { /* не критично */ }
+    const lp = store.artifactPath(id, LISTING_ARTIFACT);
+    if (fs.existsSync(lp)) fs.unlinkSync(lp);
+  }
+
   return { saved: rel, name: artifactName, title, bytes: buffer.length };
 }
 

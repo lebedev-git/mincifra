@@ -10,12 +10,17 @@ const routes = [
   { rx: /^#?\/?$/, view: viewDashboard },
   { rx: /^#\/about$/, view: viewAbout },
   { rx: /^#\/glossary$/, view: viewGlossary },
+  { rx: /^#\/normative$/, view: viewNormative },
+  { rx: /^#\/sources$/, view: viewSources },
   { rx: /^#\/profile$/, view: viewProfile },
   { rx: /^#\/p\/([^/]+)\/checks$/, view: (m) => viewChecks(m[1]) },
-  { rx: /^#\/p\/([^/]+)\/tracker(?:\/([A-Za-z0-9]+))?$/, view: (m) => viewTracker(m[1], m[2]) },
+  { rx: /^#\/p\/([^/]+)\/product$/, view: (m) => viewProduct(m[1], "product") },
   { rx: /^#\/p\/([^/]+)\/docs$/, view: (m) => viewDocs(m[1]) },
+  { rx: /^#\/p\/([^/]+)\/card$/, view: (m) => viewProduct(m[1], "card") },
   { rx: /^#\/p\/([^/]+)\/submit$/, view: (m) => viewSubmit(m[1]) },
-  { rx: /^#\/p\/([^/]+)$/, view: (m) => viewProduct(m[1]) },
+  // Домашний экран продукта = Депонирование (Роспатент), первая стадия маршрута.
+  // Карточка ООО (правообладатель/финансы) — отдельный экран /card, не старт.
+  { rx: /^#\/p\/([^/]+)$/, view: (m) => viewDocs(m[1]) },
 ];
 
 async function router() {
@@ -66,70 +71,62 @@ function uploader(id, kind, label, accept, onDone) {
   ]);
 }
 
-// ---------- маршрут подготовки: степпер по гейтам G0–G5 ----------
-// Реальная единица стадийности процесса — гейт (см. 01_tracker/pipeline_tracker.md),
-// не экран инструмента. Процесс НЕ линейный: G0/G1/G2/G4/G5 — организационные,
-// готовятся параллельно друг другу и параллельно с G3 (авто-проверки). Поэтому клик
-// по любому гейту всегда работает, без «Далее»/confirm — линейность тут была бы ложью.
-const STEP_ICON = { done: "✅", blocked: "⛔", active: "🟡", todo: "🔲" };
+// ---------- маршрут-стадии + сайдбар-чеклист (проекция данных) ----------
+// Единица маршрута — СТАДИЯ (Карточка → Продукт → Депонирование → Артефакты/
+// проверки → Подача). Чек-лист не отмечается вручную: сервер (core/tracker.js)
+// вычисляет статус каждого пункта из карточки/отчёта/артефактов. Здесь только
+// рисуем то, что он посчитал: степпер сверху + постоянный чек-лист справа.
 
-// Тянет трекер (единственный источник статусов гейтов — tracker.buildTracker на сервере).
-async function loadStepMeta(id) {
-  const trackerRes = await api.get(`/api/products/${id}/tracker`).catch(() => null);
-  return { tracker: trackerRes && trackerRes.tracker };
+// Тянет проекцию маршрута (единственный источник статусов стадий — tracker.buildTracker).
+async function loadTracker(id) {
+  const res = await api.get(`/api/products/${id}/tracker`).catch(() => null);
+  return res && res.tracker;
 }
 
-// Статус гейта: todo (🔲 не начат) · active (🟡 в работе) · done (✅ готово) ·
-// blocked (⛔, только G3 — реальный FAIL в проверках). Ничего не считает заново —
-// просто читает то, что уже посчитал tracker.buildTracker на сервере.
-function gateStatus(gate, meta) {
-  if (gate.auto) {
-    const t = meta && meta.tracker;
-    if (!t || !t.hasReport) return "todo";
-    if (t.checksOverall === "FAIL") return "blocked";
-    return gate.complete ? "done" : "active";
-  }
-  if (gate.complete) return "done";
-  return gate.done > 0 ? "active" : "todo";
+// Статус стадии: done (✅) · blocked (⛔, только «проверки» при FAIL) ·
+// active (🟡 начата) · todo (🔲). Только читает то, что посчитал сервер.
+function stageStatus(stage, tracker) {
+  if (stage.id === "checks" && tracker && tracker.checksOverall === "FAIL" && !stage.complete) return "blocked";
+  if (stage.complete) return "done";
+  return stage.done > 0 ? "active" : "todo";
 }
+const STATUS_WORD = { done: "закрыта", blocked: "есть блокеры", active: "в работе", todo: "не начата" };
 
-// Единая строка навигации: слева — компактные кружки гейтов G0–G5 (кликабельны
-// независимо друг от друга, без «Далее»/confirm — процесс не линейный, подробности
-// в title каждого кружка), справа — вкладки экранов инструмента. Раньше это были
-// два визуально разных ряда друг под другом; по сути обе оси нужны, но не ценой
-// двух отдельных блоков — сведены в один ряд.
-function topNav(id, active, meta) {
-  const gates = (meta && meta.tracker && meta.tracker.gates) || [];
-  const gateNodes = [];
-  gates.forEach((g, i) => {
+// Горизонтальный степпер стадий: кружки с номером, соединённые линиями, кликабельны.
+function stageStepper(id, tracker, activeStageId) {
+  const stages = ((tracker && tracker.stages) || []).filter((s) => !s.hidden);
+  // Одна видимая стадия — степпер не несёт информации, не показываем.
+  if (stages.length < 2) return el("span", {});
+  const nodes = [];
+  stages.forEach((s, i) => {
     if (i > 0) {
-      const prevStatus = gateStatus(gates[i - 1], meta);
-      gateNodes.push(el("div", { class: "step-line" + (prevStatus === "todo" ? "" : " filled") }));
+      const prev = stageStatus(stages[i - 1], tracker);
+      nodes.push(el("div", { class: "step-line" + (prev === "todo" ? "" : " filled") }));
     }
-    const status = gateStatus(g, meta);
-    const href = g.auto ? `#/p/${id}/checks`
-      : g.link ? `#/p/${id}${g.link}`
-      : `#/p/${id}/tracker/${g.id}`;
-    const statusText = { done: "готово", blocked: "есть блокеры", active: "в работе", todo: "не начато" }[status];
-    gateNodes.push(el("a", { href, class: "step-circle " + status,
-      title: `${g.id} ${g.title} — ${statusText} (${g.done}/${g.total})` }, g.id));
+    const status = stageStatus(s, tracker);
+    const cls = "step-circle " + status + (s.id === activeStageId ? " current" : "");
+    nodes.push(el("a", { href: `#/p/${id}${s.link || ""}`, class: cls,
+      title: `${s.title} — ${STATUS_WORD[status]} (${s.done}/${s.total})` }, String(i + 1)));
   });
-  const gatesRow = gates.length
-    ? el("div", { class: "stepper" }, gateNodes)
-    : el("div", { class: "muted" }, "Гейты загружаются…");
+  return stages.length
+    ? el("div", { class: "stepper" }, nodes)
+    : el("div", { class: "muted" }, "Стадии загружаются…");
+}
 
-  const items = [
-    { k: "", t: "Карточка" }, { k: "/checks", t: "Проверки" },
-    { k: "/tracker", t: "Трекер" }, { k: "/docs", t: "Документы" },
-    { k: "/submit", t: "Отправка" },
-  ];
-  const tabsRow = el("div", { class: "tabs" }, items.map((it) => {
-    const href = `#/p/${id}${it.k}`;
-    const cls = "btn" + (active === it.k ? "" : " ghost");
-    return el("a", { class: cls, href }, it.t);
-  }));
-
-  return el("div", { class: "topnav" }, [gatesRow, el("div", { class: "topnav-sep" }), tabsRow]);
+// Единый каркас экрана продукта: крошки + степпер стадий + одна широкая колонка
+// с основным контентом. Прогресс/чек-лист вынесены из рабочего экрана —
+// статус стадий виден в степпере сверху.
+function renderShell(id, activeStageId, tracker, name, crumbLabel, mainNodes) {
+  app.innerHTML = "";
+  app.append(
+    crumbs([{ text: "Продукты", href: "#/" },
+      { text: name, href: `#/p/${id}` },
+      ...(crumbLabel ? [{ text: crumbLabel }] : [])]),
+    stageStepper(id, tracker, activeStageId),
+    el("div", { class: "product-layout" }, [
+      el("div", { class: "product-main" }, mainNodes),
+    ]),
+  );
 }
 
 // Сворачиваемый блок-инструкция: <details class="help"> с заголовком и телом.
@@ -282,18 +279,18 @@ function conditionsHelp() {
       "<li><b>Страница продукта</b> на РФ-хостинге + контакты техподдержки в РФ.</li>" }),
     el("div", { class: "muted", html:
       "Финансовый критерий (30%), лицензии, сетевой аудит и страницу проверяет вкладка «Проверки». " +
-      "Остальное отмечается вручную в «Трекере» (гейты G0–G5)." }),
+      "Остальное закрывается само по мере заполнения карточки — см. чек-лист справа." }),
   ]);
 }
 function codefragHelp() {
-  return help("📄 Как получить фрагмент исходного кода (до 70 страниц)", [
+  return help("📄 Как получить фрагмент исходного кода (до 50 страниц)", [
     el("div", { html:
       "<b>Что это.</b> Для Роспатента депонируется не весь код, а <b>реферат + фрагмент листинга</b>. " +
-      "Объём фрагмента — <b>не более 70 страниц</b>." }),
+      "Объём фрагмента — <b>не более 50 страниц</b> (рекомендация ФИПС)." }),
     el("ol", { html:
-      "<li>Если код небольшой (≤70 стр.) — включите его целиком.</li>" +
-      "<li>Если кода много — по правилу Роспатента берут <b>первые 35 и последние 35 страниц</b> листинга " +
-      "(итого ≤70). Включайте значимые модули: точку входа и ключевую логику.</li>" +
+      "<li>Если код небольшой (≤50 стр.) — включите его целиком.</li>" +
+      "<li>Если кода много — берут <b>первые 25 и последние 25 страниц</b> листинга " +
+      "(итого ≤50). Включайте значимые модули: точку входа и ключевую логику.</li>" +
       "<li>Соберите в один документ моноширинным шрифтом, с нумерацией страниц.</li>" +
       "<li>На титуле укажите название программы и правообладателя.</li>" +
       "<li>Сохраните в <b>PDF</b> (или DOCX) и загрузите кнопкой «Загрузить файл».</li>" }),
@@ -421,7 +418,7 @@ function classMultiPicker(pathStr, list, curArr, getContextText) {
 function dashboardStage(p) {
   if (p.checksOverall === "FAIL") return { key: "blocked", text: "⛔ Есть блокеры в проверках" };
   if (!p.hasReport) return { key: "todo", text: "🔲 Карточка и проверки" };
-  if (p.percent < 100) return { key: "active", text: `🟡 Трекер гейтов · ${p.percent}%` };
+  if (p.percent < 100) return { key: "active", text: `🟡 В работе · ${p.percent}%` };
   return { key: "done", text: "✅ Готово к отправке" };
 }
 
@@ -459,50 +456,67 @@ async function createProduct() {
   location.hash = `#/p/${id}`;
 }
 
-// ---------- карточка продукта ----------
-async function viewProduct(id) {
+// ---------- карточка продукта (стадии «Карточка» и «Продукт») ----------
+// stage: "card" — юр. предпосылки, правообладатель, права, финансы (внешние факты —
+// чекбоксы); "product" — описание, класс, публичная страница, контакты, тех. поля.
+// Обе стадии правят один и тот же объект product; сохраняется он целиком, поэтому
+// поля другой стадии не теряются. Чек-лист справа обновляется из данных после сохранения.
+async function viewProduct(id, stage) {
+  stage = stage === "product" ? "product" : "card";
   const { product } = await api.get(`/api/products/${id}`);
-  // Справочник классов ПО (официальный классификатор). Не критичен — при ошибке просто нет автоподсказок.
-  const classesRef = await api.get("/api/reference/classes").catch(() => null);
-  const stepMeta = await loadStepMeta(id);
-  // Доступно ли автозаполнение по ИНН (DaData). Без ключа на сервере — кнопки нет.
+  const classesRef = stage === "product" ? await api.get("/api/reference/classes").catch(() => null) : null;
+  const tracker = await loadTracker(id);
   const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
-  // Доступны ли git/npx на этом ПК — определяет режим «Мастера подготовки».
-  const prepState = await api.get("/api/prepare/status").catch(() => null);
+  const prepState = stage === "product" ? await api.get("/api/prepare/status").catch(() => null) : null;
   const p = product.product || {};
-  const rh = product.rightholder || {};
-  const f = product.finance || {};
-  const t = product.tech || {};
-  const s = product.support || {};
 
-  // Плоские поля для формы: [путь, подпись, тип, подсказка?]
-  const fields = [
-    ["product.name", "Наименование", "text"],
-    ["product.shortName", "Короткое имя", "text"],
-    ["product.deliveryType", "Модель поставки", "select:SaaS,on-prem,hybrid"],
-    ["product.guiLanguage", "Язык интерфейса", "select:ru,en"],
-    ["product.productPageUrl", "URL страницы продукта", "text"],
-    ["product.class", "Класс(ы) ПО", "classmulti", "выберите класс(ы) из официального списка · подкласс СВЕРИТЬ"],
-    ["product.description", "Описание функциональных характеристик", "textarea"],
-    ["product.purpose", "Назначение / область применения", "textarea"],
-    ["rightholder.orgName", "Правообладатель", "text"],
-    ["rightholder.inn", "ИНН", "text"],
-    ["rightholder.ogrn", "ОГРН", "text"],
-    ["rightholder.ruControlSharePercent", "Доля РФ-контроля, %", "number"],
-    ["rights.basis", "Основание прав", "select:rospatent,internal_docs"],
-    ["rights.rospatentCertificateNumber", "№ свидетельства Роспатента", "text", "заполнить после регистрации"],
-    ["rights.rospatentCertificateDate", "Дата свидетельства (ГГГГ-ММ-ДД)", "text"],
-    ["rights.authors", "Авторы (ФИО через запятую)", "list", "для реферата и цепочки прав"],
-    ["product.programmingLanguages", "Языки программирования (через запятую)", "list"],
-    ["finance.annualRevenueProduct", "Выручка по продукту за год", "number"],
-    ["finance.annualForeignPayments", "Выплаты иностранцам за год", "number"],
-    ["tech.supportedOS", "Поддерживаемые ОС", "multi:Astra Linux|РЕД ОС|Alt Linux|ROSA|МСВСфера|Windows"],
-    ["tech.databases", "СУБД", "multi:PostgreSQL|Postgres Pro|ClickHouse|YDB|Tarantool|Ред База Данных|встроенная (SQLite/файловая)|не используется"],
-    ["tech.infraLocation", "Локация инфраструктуры", "select:RU,иное"],
-    ["support.contactFio", "Контакт ТП — ФИО", "text", "из профиля"],
-    ["support.contactEmail", "Контакт ТП — email", "text", "из профиля"],
-    ["support.contactPhone", "Контакт ТП — телефон", "text", "из профиля"],
+  // Плоские поля формы: [путь, подпись, тип, подсказка?, стадия]. Тип "bool" — чекбокс
+  // (внешний факт: УКЭП/ЕСИА/ЕНС/ПП325/цепочка прав). classmulti/multi/list — как раньше.
+  const ALL_FIELDS = [
+    // --- стадия «Карточка» ---
+    ["rightholder.orgName", "Правообладатель", "text", null, "card"],
+    ["rightholder.inn", "ИНН", "text", null, "card"],
+    ["rightholder.ogrn", "ОГРН", "text", null, "card"],
+    ["rightholder.address", "Адрес правообладателя", "text", null, "card"],
+    ["rightholder.ruControlSharePercent", "Доля РФ-контроля, %", "number", "требование > 50%", "card"],
+    ["rightholder.signatory.hasUKEP", "УКЭП на руководителя получена", "bool", "внешний факт", "card"],
+    ["rightholder.esiaConfirmed", "Учётная запись организации подтверждена в ЕСИА", "bool", "внешний факт", "card"],
+    ["rightholder.noEnsDebt", "Нет задолженности на ЕНС > 3000 ₽", "bool", "внешний факт", "card"],
+    ["rights.basis", "Основание прав", "select:rospatent,internal_docs", null, "card"],
+    ["rights.depSubmitted", "Депонирование подано в Роспатент (ждём свидетельство)", "bool", "Схема B", "card"],
+    ["rights.rospatentCertificateNumber", "№ свидетельства Роспатента", "text", "после регистрации", "card"],
+    ["rights.rospatentCertificateDate", "Дата свидетельства (ГГГГ-ММ-ДД)", "text", null, "card"],
+    ["rights.chainOfTitleComplete", "Цепочка прав оформлена (договоры, задания, акты)", "bool", null, "card"],
+    ["rights.authors", "Авторы (ФИО через запятую)", "list", "для реферата и цепочки прав", "card"],
+    ["compliance.pp325Checked", "Доптребования ПП № 325 сверены", "bool", "если применимо к классу", "card"],
+    ["finance.annualRevenueProduct", "Выручка по продукту за год", "number", null, "card"],
+    ["finance.annualForeignPayments", "Выплаты иностранцам за год", "number", null, "card"],
+    // --- стадия «Продукт» ---
+    ["product.name", "Наименование", "text", null, "product"],
+    ["product.shortName", "Короткое имя", "text", null, "product"],
+    ["product.deliveryType", "Модель поставки", "select:SaaS,on-prem,hybrid", null, "product"],
+    ["product.guiLanguage", "Язык интерфейса", "select:ru,en", null, "product"],
+    ["product.productPageUrl", "URL страницы продукта", "text", null, "product"],
+    ["product.pricingUrl", "URL прайса / порядка ценообразования", "text", null, "product"],
+    ["product.class", "Класс(ы) ПО", "classmulti", "выберите из списка · подкласс СВЕРИТЬ", "product"],
+    ["product.description", "Описание функциональных характеристик", "textarea", null, "product"],
+    ["product.purpose", "Назначение / область применения", "textarea", null, "product"],
+    ["product.programmingLanguages", "Языки программирования (через запятую)", "list", null, "product"],
+    ["product.expertDemo.url", "URL демо-доступа для эксперта", "text", "для SaaS", "product"],
+    ["product.expertDemo.login", "Демо — логин", "text", null, "product"],
+    ["product.expertDemo.password", "Демо — пароль", "text", null, "product"],
+    ["support.contactFio", "Контакт ТП — ФИО", "text", "из профиля", "product"],
+    ["support.contactEmail", "Контакт ТП — email", "text", "из профиля", "product"],
+    ["support.contactPhone", "Контакт ТП — телефон", "text", "из профиля", "product"],
+    ["support.lifecycleDocUrl", "URL документации жизненного цикла", "text", null, "product"],
+    ["tech.supportedOS", "Поддерживаемые ОС", "multi:Astra Linux|РЕД ОС|Alt Linux|ROSA|МСВСфера|Windows", null, "product"],
+    ["tech.databases", "СУБД", "multi:PostgreSQL|Postgres Pro|ClickHouse|YDB|Tarantool|Ред База Данных|встроенная (SQLite/файловая)|не используется", null, "product"],
+    ["tech.infraLocation", "Локация инфраструктуры", "select:RU,иное", null, "product"],
+    ["registration.deviceType", "Тип ЭВМ (для госрегистрации ПрЭВМ)", "text", "Госуслуги / ФИПС", "product"],
+    ["registration.yearCreated", "Год создания", "text", "Госуслуги / ФИПС", "product"],
+    ["registration.gisComponent", "Является компонентом ГИС", "bool", "Госуслуги / ФИПС", "product"],
   ];
+  const fields = ALL_FIELDS.filter((f) => f[4] === stage);
 
   function getVal(pathStr) {
     return pathStr.split(".").reduce((o, k) => (o == null ? o : o[k]), product);
@@ -514,23 +528,21 @@ async function viewProduct(id) {
     o[keys[keys.length - 1]] = val;
   }
 
-  const form = el("div", { class: "two-col" }, fields.map(([pathStr, label, type, hint]) => {
+  function fieldNode([pathStr, label, type, hint]) {
     const cur = getVal(pathStr);
     let input, extra = null, labelStyle = "";
-    if (type.startsWith("select:")) {
+    if (type === "bool") {
+      labelStyle = "grid-column:1 / -1";
+      const cb = el("input", { type: "checkbox", "data-path": pathStr, "data-bool": "1",
+        ...(cur === true ? { checked: "checked" } : {}) });
+      const kids = [cb, el("span", {}, label)];
+      if (hint) kids.push(el("span", { class: "tag" }, hint));
+      return el("label", { class: "field chk-field", style: labelStyle }, kids);
+    } else if (type.startsWith("select:")) {
       const opts = type.slice(7).split(",");
       input = el("select", { "data-path": pathStr },
         opts.map((o) => el("option", { value: o, ...(o === cur ? { selected: "selected" } : {}) }, o)));
-    } else if (type.startsWith("datalist:")) {
-      const listId = "dl-" + pathStr.replace(/\W/g, "");
-      const opts = type.slice(9).split("|");
-      extra = el("datalist", { id: listId }, opts.map((o) => el("option", { value: o })));
-      input = el("input", { type: "text", "data-path": pathStr, "data-list": "1", list: listId,
-        value: Array.isArray(cur) ? cur.join(", ") : (cur || "") });
     } else if (type === "classmulti") {
-      // Официальный классификатор: выбор класса из <select> + кнопка «Добавить».
-      // Выбранное показывается «чипами» с удалением; можно добавить подкласс (NN.NN)
-      // вручную. Значение — массив кодов, читается через data-multi при сохранении.
       labelStyle = "grid-column:1 / -1";
       const list = (classesRef && classesRef.classes) || [];
       const curArr = Array.isArray(cur) ? cur.slice() : (cur ? [cur] : []);
@@ -541,7 +553,6 @@ async function viewProduct(id) {
       };
       input = classMultiPicker(pathStr, list, curArr, getContextText);
     } else if (type.startsWith("multi:")) {
-      // Мультивыбор: чекбоксы по вариантам + поле «другое» для значений вне списка.
       labelStyle = "grid-column:1 / -1";
       const opts = type.slice(6).split("|");
       const curArr = Array.isArray(cur) ? cur : (cur ? [cur] : []);
@@ -561,7 +572,6 @@ async function viewProduct(id) {
       input = el("input", { type: type === "number" ? "number" : "text", "data-path": pathStr,
         value: cur == null ? "" : cur });
     }
-    // Кнопка автозаполнения по ИНН (только если DaData настроена на сервере).
     if (pathStr === "rightholder.inn" && egrulStatus && egrulStatus.enabled) {
       extra = el("button", { class: "ghost", type: "button", style: "margin-top:4px",
         onclick: (ev) => egrulFill(ev.target) }, "Заполнить по ИНН");
@@ -570,11 +580,19 @@ async function viewProduct(id) {
     if (hint) spanKids.push(el("span", { class: "tag" }, hint));
     return el("label", { class: "field", style: labelStyle },
       [el("span", { style: "display:block;margin-bottom:4px" }, spanKids), input, extra]);
-  }));
+  }
 
-  // Автозаполнение реквизитов по ИНН: тянет из DaData и подставляет в поля формы.
-  // Данные — черновик; человек проверяет и жмёт «Сохранить». Адрес пишем прямо в
-  // объект product (в форме отдельного поля адреса нет), он сохранится вместе с карточкой.
+  // Базовые поля — на виду; вторичные (реквизиты-дубли, демо-логин/пароль, доп. описания)
+  // — под «Дополнительно», чтобы не удлинять форму. Ни одно из них не влияет на чек-лист.
+  const EXTRA_PATHS = new Set([
+    "rightholder.ogrn", "rightholder.address",
+    "rights.rospatentCertificateDate", "rights.authors",
+    "product.shortName", "product.programmingLanguages",
+    "product.expertDemo.login", "product.expertDemo.password",
+  ]);
+  const form = el("div", { class: "two-col" }, fields.filter((f) => !EXTRA_PATHS.has(f[0])).map(fieldNode));
+  const extraFieldsList = fields.filter((f) => EXTRA_PATHS.has(f[0]));
+
   async function egrulFill(btn) {
     const innInp = app.querySelector('[data-path="rightholder.inn"]');
     const inn = (innInp && innInp.value || "").trim();
@@ -585,7 +603,7 @@ async function viewProduct(id) {
       const setField = (path, v) => { const n = app.querySelector(`[data-path="${path}"]`); if (n && v) n.value = v; };
       setField("rightholder.orgName", data.orgName);
       setField("rightholder.ogrn", data.ogrn);
-      if (data.address) { product.rightholder = product.rightholder || {}; product.rightholder.address = data.address; }
+      setField("rightholder.address", data.address);
       const st = data.status && data.status !== "ACTIVE" ? ` · статус: ${data.status}` : "";
       toast(`Реквизиты подставлены — проверьте и сохраните${st}`);
     } catch (e) {
@@ -593,15 +611,13 @@ async function viewProduct(id) {
     } finally { btn.disabled = false; btn.textContent = t0; }
   }
 
-  // Применяет ЧЕРНОВИК из «Мастера подготовки» к полям формы (не сохраняет — человек
-  // проверяет и жмёт «Сохранить»). Патч — вложенный объект (product.*, tech.*); поля
-  // без инпута (напр. product.version) пишутся прямо в product и уедут при сохранении.
+  // Применяет ЧЕРНОВИК из «Мастера подготовки» к полям формы (не сохраняет).
   function applyDraft(draft) {
     const patch = (draft && draft.patch) || {};
     const flat = {};
     (function walk(obj, pre) {
       for (const [k, v] of Object.entries(obj)) {
-        if (k.startsWith("_")) continue; // служебные подсказки (_classHint)
+        if (k.startsWith("_")) continue;
         const path = pre ? pre + "." + k : k;
         if (v && typeof v === "object" && !Array.isArray(v)) walk(v, path);
         else flat[path] = v;
@@ -616,7 +632,6 @@ async function viewProduct(id) {
     if (patch._classHint) toast("Возможный класс ПО: " + patch._classHint);
     return n;
   }
-  // Подставляет значение в конкретный инпут с учётом его типа (multi/list/обычный).
   function applyToInput(inp, val) {
     if (inp.getAttribute("data-multi")) {
       const vals = Array.isArray(val) ? val : [val];
@@ -638,10 +653,16 @@ async function viewProduct(id) {
     }
   }
 
+  // Сохраняет карточку. Собирает только поля текущей стадии (в DOM), пишет их в общий
+  // объект product и сохраняет его целиком. После — обновляет чек-лист; если стадия
+  // только что закрылась, ведёт на следующую (авто-переход по такту).
+  const wasComplete = !!(tracker && tracker.stages.find((s) => s.id === stage) || {}).complete;
   async function save() {
     app.querySelectorAll("[data-path]").forEach((inp) => {
       let v;
-      if (inp.getAttribute("data-multi")) {
+      if (inp.getAttribute("data-bool")) {
+        v = !!inp.checked;
+      } else if (inp.getAttribute("data-multi")) {
         const checked = Array.from(inp.querySelectorAll("input[type=checkbox]")).filter((c) => c.checked).map((c) => c.value);
         const extra = inp.querySelector(".multi-extra");
         const extraVals = extra && extra.value ? extra.value.split(",").map((x) => x.trim()).filter(Boolean) : [];
@@ -657,31 +678,39 @@ async function viewProduct(id) {
     });
     await api.put(`/api/products/${id}`, { product });
     await runChecksSilent(id);
-    toast("Сохранено, проверки обновлены");
+    const t2 = await loadTracker(id);
+    const st = t2 && t2.stages.find((s) => s.id === stage);
+    if (st && st.complete && !wasComplete && t2.nextStageId && t2.nextStageId !== stage) {
+      const next = t2.stages.find((s) => s.id === t2.nextStageId);
+      toast(`Стадия «${st.title}» закрыта → ${next.title}`);
+      location.hash = `#/p/${id}${next.link || ""}`;
+      return;
+    }
+    toast("Сохранено");
+    viewProduct(id, stage);
   }
 
-  // Артефакты
-  app.innerHTML = "";
-  app.append(
-    crumbs([{ text: "Продукты", href: "#/" }, { text: p.name || id }]),
-    topNav(id, "", stepMeta),
-    el("div", { class: "panel" }, [
-      el("h2", {}, "Карточка продукта"),
-      form,
-      el("div", { class: "row", style: "margin-top:8px" }, [
-        el("button", { onclick: save }, "Сохранить"),
-        el("button", { class: "danger", onclick: async () => {
-          if (confirm("Удалить продукт со всеми данными?")) { await api.del(`/api/products/${id}`); location.hash = "#/"; }
-        } }, "Удалить"),
-      ]),
-      classesReference(classesRef),
+  const stageTitle = stage === "product" ? "Продукт — описание и публикация" : "Карточка — правообладатель, права, финансы";
+  const panelKids = [
+    el("h2", {}, stageTitle),
+    form,
+    extraFieldsList.length
+      ? help("➕ Дополнительные поля (необязательно)", [el("div", { class: "two-col" }, extraFieldsList.map(fieldNode))])
+      : null,
+    el("div", { class: "row", style: "margin-top:8px" }, [
+      el("button", { onclick: save }, "Сохранить"),
+      el("button", { class: "danger", onclick: async () => {
+        if (confirm("Удалить продукт со всеми данными?")) { await api.del(`/api/products/${id}`); location.hash = "#/"; }
+      } }, "Удалить"),
     ]),
-    prepWizard(id, prepState, applyDraft),
-    el("div", { class: "hint", html:
-      "Дальше по маршруту: загрузка <b>SBOM/HAR</b> и запуск проверок — на вкладке " +
-      `<a href="#/p/${id}/checks">«Проверки»</a>; файлы для депонирования и реферат — на ` +
-      `<a href="#/p/${id}/docs">«Документах»</a>.` }),
-  );
+  ];
+  if (stage === "product") panelKids.push(classesReference(classesRef));
+
+  const main = [el("div", { class: "panel" }, panelKids)];
+  if (stage === "product") main.push(prepWizard(id, prepState, applyDraft));
+
+  const crumbLabel = stage === "product" ? "Продукт" : "Карточка";
+  renderShell(id, stage, tracker, p.name || id, crumbLabel, main);
 }
 
 // ---------- проверки ----------
@@ -690,11 +719,7 @@ async function viewChecks(id) {
   const name = (product.product && product.product.name) || id;
   const { report } = await api.get(`/api/products/${id}/report`);
   const { artifacts } = await api.get(`/api/products/${id}/artifacts`);
-  const stepMeta = await loadStepMeta(id);
-
-  app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Проверки" }]),
-    topNav(id, "/checks", stepMeta));
+  const tracker = await loadTracker(id);
 
   // Артефакты, которые питают проверки (SBOM/HAR); документы депонирования (dep_/rights_) — на «Документах».
   const checkArtifacts = artifacts.filter((a) => !/^(dep_|rights_)/i.test(a.name));
@@ -704,9 +729,9 @@ async function viewChecks(id) {
   const harAutoBtn = el("button", { class: "ghost", onclick: collectHarAuto }, "🌐 Собрать HAR автоматически");
   const harAutoMsg = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" });
 
-  app.append(el("div", { class: "panel" }, [
+  const artPanel = el("div", { class: "panel" }, [
     el("h2", {}, "Артефакты для проверок"),
-    el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (гейт G3). <b>SBOM</b> собирает «Мастер подготовки» на карточке; <b>HAR</b> снимается в браузере (см. ниже) либо автоматически." }),
+    el("div", { class: "hint", html: "Загрузите два файла из вашего продукта — по ним пройдут проверки лицензий и сетевого аудита (стадия «Артефакты и проверки»). <b>SBOM</b> собирает «Мастер подготовки» на стадии «Продукт»; <b>HAR</b> снимается в браузере (см. ниже) либо автоматически." }),
     el("div", { class: "row", style: "gap:8px" }, [
       uploader(id, "sbom", "SBOM", null, () => viewChecks(id)),
       uploader(id, "har", "HAR", null, () => viewChecks(id)),
@@ -716,7 +741,7 @@ async function viewChecks(id) {
     el("div", { class: "spacer" }), artList,
     el("div", { class: "spacer" }),
     harHelp(),
-  ]));
+  ]);
 
   const liveChk = el("input", { type: "checkbox", id: "live-check" });
   const runBtn = el("button", { onclick: run }, "▶ Запустить проверки");
@@ -730,7 +755,7 @@ async function viewChecks(id) {
       el("span", {}, " добавить живую проверку страницы (реальный HTTP-запрос к URL продукта из этого окружения)")]),
     el("div", { id: "checks-body" }),
   ]);
-  app.append(panel);
+  renderShell(id, "checks", tracker, name, "Проверки", [artPanel, panel]);
   renderReport(report);
 
   // Автосбор HAR: headless-браузер сам открывает productPageUrl и записывает сетевой
@@ -798,246 +823,219 @@ async function viewChecks(id) {
   }
 }
 
-// ---------- трекер ----------
-// focusGateId (опционально) — с каким гейтом открыть страницу: пришли с клика по
-// гейт-степперу на другом экране (#/p/:id/tracker/:gateId). Просто подсвечиваем и
-// скроллим к нему — сами гейты и их состав не меняются.
-async function viewTracker(id, focusGateId) {
-  const { product } = await api.get(`/api/products/${id}`);
-  const name = (product.product && product.product.name) || id;
-  const { tracker } = await api.get(`/api/products/${id}/tracker`);
-  const stepMeta = { tracker };
-
-  app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Трекер" }]),
-    topNav(id, "/tracker", stepMeta));
-
-  const overall = el("div", { class: "panel" }, [
-    el("div", { class: "row", style: "align-items:center", html:
-      `<h2 style="flex:1;margin:0">Готовность: ${tracker.percent}%</h2>` +
-      `<span class="muted">${tracker.done}/${tracker.total} пунктов · проверки: ${badge(tracker.checksOverall)}</span>` }),
-    progressBar(tracker.percent),
-  ]);
-  app.append(overall);
-
-  let focusNode = null;
-  tracker.gates.forEach((g) => {
-    const readOnly = g.auto || g.artifacts;   // выводится из проверок/артефактов
-    const autoTag = g.auto ? "из проверок" : g.artifacts ? "из документов" : null;
-    const items = g.items.map((it) => {
-      const cb = el("input", { type: "checkbox", ...(it.done ? { checked: "checked" } : {}),
-        ...(readOnly ? { disabled: "disabled" } : {}) });
-      if (!readOnly) cb.addEventListener("change", async () => {
-        await api.put(`/api/products/${id}/tracker`, { items: { [it.id]: cb.checked } });
-        toast("Отмечено"); viewTracker(id);
-      });
-      return el("label", { class: "item" + (readOnly ? " auto" : "") }, [
-        cb, el("span", {}, it.text),
-        autoTag ? el("span", { class: "auto-tag" }, autoTag) : null,
-      ]);
-    });
-    const isFocus = focusGateId && g.id === focusGateId;
-    const gateNode = el("div", { class: "gate" + (isFocus ? " focus" : "") }, [
-      el("div", { class: "head", html:
-        `<span class="gid">${esc(g.id)}</span> <span>${esc(g.title)}</span>` +
-        `<span class="pct">${g.done}/${g.total}${g.auto ? " · авто" : g.artifacts ? " · из документов" : ""}</span>` }),
-      g.artifacts ? el("div", { class: "muted", style: "font-size:12px;margin:2px 0 6px" },
-        "Пункты закрываются автоматически при загрузке/генерации файлов на вкладке «Документы».") : null,
-      el("div", { class: "items" }, items),
-    ]);
-    if (isFocus) focusNode = gateNode;
-    app.append(gateNode);
-  });
-
-  if (!tracker.hasReport) app.append(el("div", { class: "hint" },
-    "Гейт G3 заполнится после запуска проверок на вкладке «Проверки»."));
-  if (focusNode) focusNode.scrollIntoView({ behavior: "smooth", block: "center" });
+// ---------- документы ----------
+// Глубокое слияние патча автозаполнения в карточку: объекты — рекурсивно,
+// скаляры и массивы — заменой (как deepMerge в mcp/server.js).
+function deepMergeObj(target, patch) {
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      target[k] = (target[k] && typeof target[k] === "object" && !Array.isArray(target[k])) ? target[k] : {};
+      deepMergeObj(target[k], v);
+    } else {
+      target[k] = v;
+    }
+  }
+  return target;
 }
 
-// ---------- документы ----------
-async function viewDocs(id) {
+async function viewDocs(id, forcePrep) {
   const { product } = await api.get(`/api/products/${id}`);
   const name = (product.product && product.product.name) || id;
-  const { docs } = await api.get(`/api/products/${id}/dossier`);
   const { artifacts } = await api.get(`/api/products/${id}/artifacts`);
-  const stepMeta = await loadStepMeta(id);
-  const p = product.product || {};
-  const rh = product.rightholder || {};
-  const t = product.tech || {};
+  const tracker = await loadTracker(id);
 
-  app.innerHTML = "";
-  app.append(crumbs([{ text: "Продукты", href: "#/" }, { text: name, href: `#/p/${id}` }, { text: "Документы" }]),
-    topNav(id, "/docs", stepMeta));
+  // Подготовка пройдена = есть хоть один сгенерированный роспатентный артефакт.
+  // До этого показываем ТОЛЬКО мастер (путь → диагностика → результат), без пустых таблиц.
+  const hasPrepArtifacts = artifacts.some((a) => /^dep_(snapshot|referat|codefrag|statement)_/i.test(a.name));
+  const prepared = hasPrepArtifacts && !forcePrep;
 
-  const genBtn = el("button", { onclick: gen }, "📄 Сгенерировать досье");
-  const list = el("div", { id: "docs-list" });
-  app.append(el("div", { class: "panel" }, [
-    el("div", { class: "row", style: "align-items:center" }, [
-      el("h2", { style: "flex:1;margin:0" }, "Пакет досье (.docx)"), genBtn,
-    ]),
-    el("div", { class: "hint" }, "Документы — предзаполненные каркасы из карточки. Правовые формулировки проверяет юрист/бухгалтер правообладателя."),
-    list,
-  ]));
-  renderDocs(docs);
-
-  async function gen() {
-    genBtn.disabled = true; genBtn.textContent = "Генерация…";
+  // --- Мастер: один экран «путь + кнопка» ---
+  const wizPath = el("input", { type: "text", value: "",
+    placeholder: "C:\\путь\\к\\папке\\проекта", style: "width:100%" });
+  const wizNotes = el("textarea", { placeholder:
+    "Не обязательно: пара фраз о программе (что делает, для кого) — попадёт в реферат.",
+    style: "width:100%;min-height:56px" });
+  const wizProgress = el("div", { class: "muted", style: "font-size:12px;margin-top:8px" });
+  async function runWizard(btn) {
+    const src = wizPath.value.trim();
+    if (!src) { toast("Укажи путь к папке проекта", true); return; }
+    btn.disabled = true; const t0 = btn.textContent; btn.textContent = "Готовлю…";
+    const step = (s) => { wizProgress.textContent = s; };
     try {
-      const res = await api.post(`/api/products/${id}/dossier`);
-      toast("Досье сгенерировано");
-      renderDocs(res.docs.map((d) => ({ name: d.name, size: d.bytes })));
-    } finally { genBtn.disabled = false; genBtn.textContent = "📄 Сгенерировать досье"; }
-  }
-  function renderDocs(items) {
-    list.innerHTML = "";
-    if (!items || !items.length) { list.append(el("div", { class: "muted" }, "Документы ещё не сгенерированы.")); return; }
-    const rows = items.map((d) => el("tr", {}, [
-      el("td", {}, el("a", { href: `/api/products/${id}/dossier/${encodeURIComponent(d.name)}` }, d.name)),
-      el("td", { class: "muted" }, `${d.size || d.bytes || "?"} б`),
-    ]));
-    list.append(el("table", {}, [el("tr", {}, [el("th", {}, "Файл"), el("th", {}, "Размер")]), ...rows]));
-  }
-
-  // --- Трекер подготовки к депонированию (Роспатент) ---
-  // Пункты: ключ (= префикс файлов), формулировка, допустимые форматы.
-  // [ключ, подпись, форматы загрузки, genKind|null] — genKind: можно сгенерировать автоматически.
-  const DEPON_ITEMS = [
-    ["dep_snapshot",  "Снимок версии кода + акт фиксации (SHA-256)",      ".zip,.tar,.gz,.7z,.rar", "dep_snapshot"],
-    ["dep_referat",   "Реферат программы",                                ".docx,.pdf,.txt", "dep_referat"],
-    ["dep_codefrag",  "Фрагмент исходного кода (до 70 страниц)",          ".pdf,.docx", "dep_codefrag"],
-    ["dep_chain",     "Цепочка прав: договоры, служебные задания, акты",  ".pdf,.zip,.docx", "dep_chain"],
-    ["dep_statement", "Заявление в Роспатент, подписанное УКЭП",          ".pdf,.sig,.zip", "dep_statement"],
-    ["dep_cert",      "Свидетельство о госрегистрации ПО",                ".pdf,.png,.jpg,.jpeg", null],
-  ];
-
-  async function genDepon(kind, btn) {
-    btn.disabled = true; const t0 = btn.textContent; btn.textContent = "…";
-    try {
-      const res = await api.post(`/api/products/${id}/depon/${kind}`);
-      toast(`Сгенерировано: ${res.generated.title}`);
+      step("1/3 — читаю код, делаю снимок и SHA-256…");
+      const resp = await api.post(`/api/products/${id}/autofill`, { path: src, notes: wizNotes.value });
+      const patch = resp.draft && resp.draft.patch;
+      if (patch && Object.keys(patch).length) {
+        const fresh = (await api.get(`/api/products/${id}`)).product;
+        deepMergeObj(fresh, patch);
+        await api.put(`/api/products/${id}`, { product: fresh });
+      }
+      step("2/3 — генерирую документы (фрагмент кода, реферат)…");
+      const errs = [];
+      // Порядок важен: dep_codefrag фиксирует язык из листинга в карточку (и удаляет
+      // сырьё), поэтому реферат генерируем после него — с уже заполненным языком.
+      for (const kind of ["dep_snapshot", "dep_codefrag", "dep_referat"]) {
+        try { await api.post(`/api/products/${id}/depon/${kind}`); }
+        catch (e) { errs.push(`${kind}: ${e.message}`); }
+      }
+      step("3/3 — собираю монтажный лист…");
+      await api.post(`/api/products/${id}/rospatent/autofill`).catch(() => {});
+      toast("Готово — комплект для Госуслуг собран");
+      errs.forEach((m) => toast(m, true));
       viewDocs(id);
-    } catch (e) { toast(e.message || "Ошибка генерации", true); btn.disabled = false; btn.textContent = t0; }
+    } catch (e) {
+      wizProgress.textContent = "";
+      toast(e.message || "Не удалось подготовить", true);
+      btn.disabled = false; btn.textContent = t0;
+    }
+  }
+  const wizBtn = el("button", { onclick: (e) => runWizard(e.currentTarget) }, "▶ Подготовить к подаче");
+  const wizardPanel = el("div", { class: "panel" }, [
+    el("h2", { style: "margin:0 0 8px" }, "Подача в Роспатент"),
+    el("div", { class: "hint" },
+      "Укажи папку с исходным кодом — платформа сама сделает снимок с SHA-256, фрагмент кода, " +
+      "реферат и заявление, и покажет поля для формы на Госуслугах. Больше ничего заполнять не нужно."),
+    el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" }, "Путь к папке проекта на этом ПК"), wizPath]),
+    el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" }, "Коротко о программе (не обязательно)"), wizNotes]),
+    el("div", { class: "row", style: "margin-top:6px" }, [wizBtn]),
+    wizProgress,
+  ]);
+
+  if (!prepared) {
+    renderShell(id, "depon", tracker, name, "Документы", [wizardPanel]);
+    return;
   }
 
   // Внутреннее сырьё авто-подготовки (листинг для фрагмента) не показываем и не считаем документом.
   const isDeponRaw = (name) => /^dep_codefrag_listing\.txt$/i.test(name);
-  const deponRows = DEPON_ITEMS.map(([key, label, accept, genKind]) => {
-    const files = artifacts.filter((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name));
-    const done = files.length > 0;
-    const filesCell = files.length
-      ? el("div", {}, files.map((a) => el("div", { class: "mono", style: "margin:1px 0" }, [
-          el("a", { href: `/api/products/${id}/artifacts/file/${encodeURIComponent(a.name)}` },
-            a.name.slice(key.length + 1)),
-          el("a", { href: "#", style: "margin-left:8px;color:var(--fail)", onclick: async (e) => {
-            e.preventDefault();
-            if (confirm("Удалить файл?")) { await api.del(`/api/products/${id}/artifacts/${encodeURIComponent(a.name)}`); viewDocs(id); }
-          } }, "×"),
-        ])))
-      : el("span", { class: "muted" }, "—");
-    const actions = [uploader(id, key, "файл", accept, () => viewDocs(id))];
-    if (genKind) {
-      const gb = el("button", { class: "ghost", style: "margin-left:6px",
-        onclick: () => genDepon(genKind, gb) }, "Сгенерировать");
-      actions.push(gb);
-    }
-    return el("tr", {}, [
-      el("td", { style: "width:1%;white-space:nowrap" }, done ? "✅" : "☐"),
-      el("td", {}, label),
-      el("td", { style: "width:26%" }, filesCell),
-      el("td", { style: "width:1%;white-space:nowrap" }, el("div", { class: "row", style: "gap:4px;flex-wrap:nowrap" }, actions)),
-    ]);
-  });
-  const deponDone = DEPON_ITEMS.filter(([key]) => artifacts.some((a) => a.name.toLowerCase().startsWith(key + "_") && !isDeponRaw(a.name))).length;
 
-  // Черновик реферата из карточки (свёрнут; для копирования при оформлении).
-  const referat = [
-    "РЕФЕРАТ программы для ЭВМ", "",
-    `Название программы: ${p.name || "—"}`,
-    `Правообладатель: ${rh.orgName || "—"} (ИНН ${rh.inn || "—"}, ОГРН ${rh.ogrn || "—"})`,
-    "Авторы: — ФИО разработчиков —",
-    "Язык программирования: — указать —",
-    `Операционные системы: ${(Array.isArray(t.supportedOS) ? t.supportedOS.join(", ") : t.supportedOS) || "—"}`,
-    "Объём программы: — напр. 12 МБ —", "",
-    "Аннотация:", p.description || "— функциональные характеристики —", "",
-    `Назначение: ${p.purpose || "— область применения —"}`,
-    "Графический интерфейс — на русском языке.",
-  ].join("\n");
-  const referatBox = el("textarea", { readonly: "readonly",
-    style: "width:100%;min-height:180px;font-family:Consolas,monospace;font-size:12px" }, referat);
-  const referatDraft = help("✍ Черновик реферата — скопировать и оформить в .docx", [
-    referatBox,
-    el("div", { class: "row", style: "margin-top:6px" }, [
-      el("button", { class: "ghost", onclick: async () => {
-        const ok = await copy(referat); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);
+  // --- Монтажный лист «Госрегистрация ПрЭВМ» (Госуслуги / ФИПС) ---
+  const { rospatent: G } = await api.get(`/api/products/${id}/rospatent`);
+  const gCopy = (text) => el("button", { class: "ghost", onclick: async () => {
+    const ok = await copy(String(text)); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);
+  } }, "Копировать");
+  const gRows = G.fields.map((f) => el("tr", {}, [
+    el("td", { style: "width:34%" }, [
+      el("b", {}, f.label),
+      f.note ? el("div", { class: "tag" }, f.note) : null,
+    ]),
+    el("td", { class: "mono", style: "white-space:pre-wrap" }, String(f.value)),
+    el("td", { style: "width:1%" }, gCopy(f.value)),
+  ]));
+  const gOver = G.referatLen > G.referatLimit;
+  const gReferat = el("div", { style: "margin-top:10px" }, [
+    el("div", { class: "row", style: "align-items:center;margin-bottom:4px" }, [
+      el("b", { style: "flex:1" }, "Реферат (шаг 2, ≤ 900 символов)"),
+      el("span", { class: gOver ? "tag" : "muted", style: gOver ? "color:var(--fail)" : "" },
+        `${G.referatLen}/${G.referatLimit}`),
+      el("button", { class: "ghost", style: "margin-left:8px", onclick: async () => {
+        const ok = await copy(G.referat); toast(ok ? "Скопировано" : "Не удалось скопировать", !ok);
       } }, "Копировать"),
+    ]),
+    el("textarea", { readonly: "readonly",
+      style: "width:100%;min-height:130px;font-family:Consolas,monospace;font-size:12px" }, G.referat),
+  ]);
+  const gosuslugiPanel = el("div", { class: "panel" }, [
+    el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
+      el("h2", { style: "flex:1;margin:0" }, "Госуслуги: госрегистрация ПрЭВМ"),
+    ]),
+    el("table", {}, [
+      el("tr", {}, [el("th", {}, "Поле"), el("th", {}, "Значение"), el("th", {}, "")]),
+      ...gRows,
+    ]),
+    gReferat,
+  ]);
+
+  // --- Блок 2: «Скачай и приложи» — что грузить на Госуслуги, а что хранить у себя ---
+  const FILE_LABELS = {
+    dep_snapshot: "Снимок кода + акт фиксации (SHA-256)",
+    dep_referat: "Реферат программы",
+    dep_codefrag: "Фрагмент исходного кода",
+    dep_statement: "Заявление (шпаргалка значений)",
+    dep_cert: "Свидетельство о госрегистрации",
+  };
+  // В заявку на Госуслугах идут только идентифицирующие материалы (ст. 1262 ГК):
+  // реферат + фрагмент кода. Снимок/акт — доказательство версии, хранится у себя.
+  const UPLOAD_KINDS = new Set(["dep_referat", "dep_codefrag"]);
+  const dlRows = artifacts
+    .filter((a) => !isDeponRaw(a.name) && /^dep_(snapshot|referat|codefrag|statement|cert)_/i.test(a.name))
+    .map((a) => {
+      const key = (a.name.match(/^dep_[a-z]+/i) || [""])[0].toLowerCase();
+      return { a, key, forUpload: UPLOAD_KINDS.has(key) };
+    })
+    .sort((x, y) => Number(y.forUpload) - Number(x.forUpload))
+    .map(({ a, key, forUpload }) => el("tr", {}, [
+      el("td", { style: "width:1%;white-space:nowrap" },
+        forUpload
+          ? el("span", { class: "tag", style: "color:var(--ok, #2e7d32);border-color:currentColor;font-weight:600" }, "→ в заявку")
+          : el("span", { class: "muted" }, "для себя")),
+      el("td", {}, FILE_LABELS[key] || key),
+      el("td", {}, el("a", { href: `/api/products/${id}/artifacts/file/${encodeURIComponent(a.name)}` },
+        "⬇ " + a.name.slice(key.length + 1))),
+      el("td", { class: "muted", style: "width:1%;white-space:nowrap" }, `${Math.round((a.size || 0) / 1024)} КБ`),
+    ]));
+  const filesPanel = el("div", { class: "panel" }, [
+    el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
+      el("h2", { style: "flex:1;margin:0" }, "Скачай и приложи к заявке"),
+      el("button", { class: "ghost", onclick: async () => {
+        try { await api.post(`/api/products/${id}/artifacts/open-folder`); }
+        catch (e) { toast(e.message || "Не удалось открыть папку", true); }
+      } }, "📂 Открыть папку"),
+    ]),
+    el("table", {}, [el("tr", {}, [el("th", {}, "Документ"), el("th", {}, "Файл"), el("th", {}, "")]), ...dlRows]),
+    el("div", { class: "row", style: "margin-top:10px;align-items:center;gap:8px" }, [
+      el("span", { class: "muted" }, "Пришло свидетельство из Роспатента?"),
+      uploader(id, "dep_cert", "PDF", ".pdf,.png,.jpg,.jpeg", () => viewDocs(id)),
     ]),
   ]);
 
-  app.append(el("div", { class: "panel" }, [
-    el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
-      el("h2", { style: "flex:1;margin:0" }, "Подготовка к депонированию (Роспатент)"),
-      el("span", { class: "muted" }, `Готово: ${deponDone}/${DEPON_ITEMS.length}`),
-    ]),
-    el("table", {}, [
-      el("tr", {}, [el("th", {}, ""), el("th", {}, "Документ"), el("th", {}, "Файлы"), el("th", {}, "")]),
-      ...deponRows,
-    ]),
-    el("div", { class: "spacer" }),
-    el("div", { class: "muted", style: "font-size:12px" },
-      `«Снимок версии кода» готовит «Мастер подготовки» на карточке; загрузить готовый файл сюда можно и вручную.`),
-    codefragHelp(),
-    referatDraft,
-  ]));
+  renderShell(id, "depon", tracker, name, "Роспатент", [gosuslugiPanel, filesPanel]);
 }
 
 // ---------- отправка (монтажный лист подачи) ----------
 async function viewSubmit(id) {
   const { submission } = await api.get(`/api/products/${id}/submission`);
   const S = submission;
-  const stepMeta = await loadStepMeta(id);
+  const { product, rights: rightsInfo } = await api.get(`/api/products/${id}`);
+  const rState = (rightsInfo && rightsInfo.state) || "draft";
+  const rReady = rState === "transfer_registered";
+  const tracker = await loadTracker(id);
+  const main = [];
 
-  app.innerHTML = "";
-  app.append(
-    crumbs([{ text: "Продукты", href: "#/" }, { text: S.productName, href: `#/p/${id}` }, { text: "Отправка" }]),
-    topNav(id, "/submit", stepMeta),
-  );
+  // Гейт Схемы B: подача в Минцифру возможна только когда переход права зарегистрирован в ФИПС.
+  if (!rReady) {
+    main.push(el("div", { class: "panel", style: "border-color:var(--fail)" }, [
+      el("b", { style: "color:var(--fail)" }, "Подача в Минцифру заблокирована"),
+      el("div", { class: "muted", style: "margin-top:4px" },
+        "Цепочка прав не замкнута. На стадии «Документы» получи свидетельство Роспатента, оформи отчуждение " +
+        "(договор + акт) и зарегистрируй переход права в ФИПС (ст. 1232). Текущий статус права: «" + ((rightsInfo && rightsInfo.meta && rightsInfo.meta.label) || rState) + "»."),
+    ]));
+  }
 
-  app.append(el("div", { class: "hint", html:
+  main.push(el("div", { class: "hint", html:
     "Готовые значения для формы карточки ПО на <span class='mono'>reestr.digital.gov.ru</span>. " +
     "Копируй по полям и вставляй в портал. Значения с «СВЕРИТЬ» проверь перед подачей." }));
 
-  // --- Что осталось за вами (агрегированный список действий человека) ---
-  const acts = S.nextActions || [];
-  const cmp = S.completeness || { percent: 0, filled: 0, total: 0 };
-  if (acts.length) {
-    // Группировка по area с сохранением порядка появления.
-    const groups = [];
-    const byArea = {};
-    acts.forEach((a) => {
-      if (!byArea[a.area]) { byArea[a.area] = []; groups.push(a.area); }
-      byArea[a.area].push(a);
-    });
-    const groupNodes = groups.map((area) => el("div", { style: "margin:6px 0" }, [
-      el("div", { class: "mono", style: "font-weight:600;margin-bottom:2px" }, area),
-      el("ul", { style: "margin:2px 0" }, byArea[area].map((a) =>
-        el("li", { style: "margin:2px 0" }, [
-          el("a", { href: a.hash }, a.text),
-        ]))),
-    ]));
-    app.append(el("div", { class: "panel", style: "border-left:4px solid var(--blue)" }, [
-      el("div", { class: "row", style: "align-items:center" }, [
-        el("h2", { style: "flex:1;margin:0" }, `Что осталось за вами (${acts.length})`),
-        el("span", { class: "muted" }, `Карточка: ${cmp.filled}/${cmp.total} полей`),
-      ]),
-      el("div", { class: "muted", style: "font-size:12px;margin:4px 0 8px" },
-        "Единый список действий: заполнить поля, загрузить артефакты, отметить ручные пункты. Клик — переход к нужной вкладке."),
-      ...groupNodes,
-    ]));
-  } else {
-    app.append(el("div", { class: "panel", style: "border-left:4px solid var(--pass, #2e7d32)" }, [
-      el("div", { html: "✅ <b>Все отслеживаемые пункты закрыты.</b> Сверьте значения с «СВЕРИТЬ» и подавайте." }),
-    ]));
-  }
+  // Список незакрытых пунктов не дублируем — он всегда виден в сайдбаре-чеклисте справа.
+
+  // --- Отметка об отправке (внешний факт: заявление подано на портале) ---
+  // Заблокирована, пока право не отчуждено ООО (Схема B).
+  const sentCb = el("input", { type: "checkbox",
+    ...(rReady ? {} : { disabled: "disabled" }),
+    ...(product.submission && product.submission.sentToPortal ? { checked: "checked" } : {}) });
+  sentCb.addEventListener("change", async () => {
+    product.submission = product.submission || {};
+    product.submission.sentToPortal = sentCb.checked;
+    await api.put(`/api/products/${id}`, { product });
+    toast(sentCb.checked ? "Отмечено: отправлено на портал" : "Снята отметка");
+    viewSubmit(id);
+  });
+  main.push(el("div", { class: "panel" }, [
+    el("label", { class: "chk" }, [sentCb,
+      el("span", {}, " Заявление отправлено на проверку на reestr.digital.gov.ru (закрывает стадию «Подача»)")]),
+  ]));
 
   // --- Поля для портала ---
   const copyBtn = (text) => el("button", { class: "ghost", onclick: async () => {
@@ -1058,7 +1056,7 @@ async function viewSubmit(id) {
     const ok = await copy(text); toast(ok ? "Все поля скопированы" : "Не удалось", !ok);
   } }, "⧉ Копировать всё");
 
-  app.append(el("div", { class: "panel" }, [
+  main.push(el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center" }, [
       el("h2", { style: "flex:1;margin:0" }, "Поля карточки ПО для портала"), copyAll,
     ]),
@@ -1080,7 +1078,7 @@ async function viewSubmit(id) {
       el("td", { style: "width:14%" }, link),
     ]);
   });
-  app.append(el("div", { class: "panel" }, [
+  main.push(el("div", { class: "panel" }, [
     el("h2", {}, "Документы к прикреплению"),
     el("div", { class: "muted", style: "font-size:12px;margin-bottom:8px" },
       "«готово» — сформировано платформой; «вручную» — подготовить и приложить самостоятельно."),
@@ -1091,13 +1089,15 @@ async function viewSubmit(id) {
   ]));
 
   // --- Сценарий подачи ---
-  app.append(el("div", { class: "panel" }, [
+  main.push(el("div", { class: "panel" }, [
     el("h2", {}, "Порядок отправки на портале"),
     el("ol", {}, S.steps.map((s) => el("li", { style: "margin:4px 0" }, s))),
     el("div", { class: "muted", html:
-      `Готовность по трекеру: <b>${S.readiness.percent}%</b> · проверки: ${badge(S.readiness.checksOverall)}. ` +
+      `Готовность по маршруту: <b>${S.readiness.percent}%</b> · проверки: ${badge(S.readiness.checksOverall)}. ` +
       "Пошлина 0 ₽. Срок цикла — ориентировочно 1–3 мес. (СВЕРИТЬ)." }),
   ]));
+
+  renderShell(id, "submit", tracker, S.productName, "Отправка", main);
 }
 
 // ---------- профиль правообладателя ----------
@@ -1115,6 +1115,11 @@ async function viewProfile() {
     ["rightholder.ruControlSharePercent", "Доля РФ-контроля, %", "number"],
     ["rightholder.signatory.name", "Подписант — ФИО", "text"],
     ["rightholder.signatory.position", "Подписант — должность", "text"],
+    ["author.fullName", "Автор (физлицо) — ФИО", "text"],
+    ["author.birthDate", "Автор — дата рождения", "text"],
+    ["author.citizenship", "Автор — гражданство", "text"],
+    ["author.snils", "Автор — СНИЛС", "text"],
+    ["author.address", "Автор — адрес места жительства", "text"],
     ["support.contactFio", "Контакт ТП — ФИО", "text"],
     ["support.contactEmail", "Контакт ТП — email", "text"],
     ["support.contactPhone", "Контакт ТП — телефон", "text"],
@@ -1168,7 +1173,8 @@ async function viewProfile() {
     el("h2", {}, "Профиль правообладателя"),
     el("div", { class: "hint", html:
       "Заполните один раз — реквизиты организации и контакты техподдержки будут " +
-      "<b>автоматически подставляться</b> в каждый новый продукт. В карточке продукта значения можно переопределить." }),
+      "<b>автоматически подставляться</b> в каждый новый продукт. В карточке продукта значения можно переопределить.<br>" +
+      "<b>Автор (физлицо)</b> — на него оформляется депонирование в Роспатенте; затем право отчуждается организации-правообладателю." }),
     form,
     el("div", { class: "row", style: "margin-top:8px" }, [el("button", { onclick: save }, "Сохранить профиль")]),
   ]));
@@ -1184,7 +1190,7 @@ function viewAbout() {
     el("ul", { html:
       "<li>Завести карточку продукта и загрузить артефакты (SBOM/HAR).</li>" +
       "<li>Запустить технические проверки готовности (правило 30%, лицензии OSS, сетевой аудит, страница).</li>" +
-      "<li>Вести трекер гейтов G0–G5; G3 заполняется из результатов проверок.</li>" +
+      "<li>Проходить маршрут по стадиям; чек-лист справа закрывается сам из данных карточки, артефактов и проверок.</li>" +
       "<li>Сгенерировать пакет досье в .docx.</li>" }),
     el("div", { class: "hint", html:
       "Значения с пометкой «СВЕРИТЬ» (сроки, коды классов, форматы вложений) проверяйте на " +
@@ -1202,18 +1208,37 @@ function mdInline(s) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 }
+// Таблица markdown: строка "| a | b |", затем строка-разделитель "| --- | --- |".
+function isTableRow(line) { return /^\s*\|.*\|\s*$/.test(line); }
+function isTableRule(line) { return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line); }
+function splitTableRow(line) {
+  return line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+}
 function mdToHtml(md) {
   const out = [];
   let inList = false;
   const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
-  for (const raw of String(md).split(/\r?\n/)) {
-    const line = raw.replace(/\s+$/, "");
+  const lines = String(md).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, "");
     if (/^#{1,6}\s/.test(line)) {
       closeList();
       const lvl = line.match(/^(#{1,6})/)[1].length;
       out.push(`<h${lvl}>${mdInline(line.replace(/^#{1,6}\s+/, ""))}</h${lvl}>`);
+    } else if (isTableRow(line) && isTableRule((lines[i + 1] || ""))) {
+      closeList();
+      const header = splitTableRow(line);
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length && isTableRow(lines[i])) { bodyRows.push(splitTableRow(lines[i])); i++; }
+      i--;
+      out.push("<table>", "<thead><tr>" + header.map((c) => `<th>${mdInline(c)}</th>`).join("") + "</tr></thead>", "<tbody>");
+      for (const row of bodyRows) out.push("<tr>" + row.map((c) => `<td>${mdInline(c)}</td>`).join("") + "</tr>");
+      out.push("</tbody></table>");
     } else if (/^---+$/.test(line)) {
       closeList(); out.push("<hr>");
+    } else if (/^>\s?/.test(line)) {
+      closeList(); out.push(`<p class="md-note">${mdInline(line.replace(/^>\s?/, ""))}</p>`);
     } else if (/^-\s+/.test(line)) {
       if (!inList) { out.push("<ul>"); inList = true; }
       out.push(`<li>${mdInline(line.replace(/^-\s+/, ""))}</li>`);
@@ -1226,6 +1251,61 @@ function mdToHtml(md) {
   closeList();
   return out.join("\n");
 }
+// Разбивает markdown на разделы по заголовкам "## " (верхнеуровневые h1 "# "
+// не делят — считаются общим заголовком страницы). Возвращает [{title, id, md}].
+function splitMdSections(md) {
+  const lines = String(md).split(/\r?\n/);
+  const sections = [];
+  let cur = { title: "Общее", id: "intro", body: [] };
+  for (const line of lines) {
+    const m = line.match(/^##\s+(.*)$/);
+    if (m) {
+      if (cur.body.some((l) => l.trim() !== "")) sections.push(cur);
+      const title = m[1].replace(/[⚠️🆕]/g, "").trim();
+      const id = "sec-" + title.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+      cur = { title: m[1].trim(), id, body: [] };
+    } else if (/^#\s+/.test(line)) {
+      cur.body.push(line.replace(/^#\s+/, ""));
+    } else {
+      cur.body.push(line);
+    }
+  }
+  if (cur.body.some((l) => l.trim() !== "")) sections.push(cur);
+  return sections;
+}
+
+async function viewNormative() {
+  app.innerHTML = "";
+  const panel = el("div", { class: "panel normative" }, [el("p", {}, "Загрузка нормативного справочника…")]);
+  app.append(panel);
+  try {
+    const md = await api.get("/api/reference/normative");
+    const sections = splitMdSections(md);
+    const toc = el("nav", { class: "normative-toc" }, [
+      el("div", { class: "normative-toc-title" }, "Разделы"),
+      ...sections.map((s) => {
+        const a = el("a", { href: "#" + s.id }, s.title);
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        return a;
+      }),
+    ]);
+    const content = el("div", { class: "normative-content" },
+      sections.map((s) => el("section", { id: s.id, class: "normative-section", html: mdToHtml(s.body.join("\n")) }))
+    );
+    panel.innerHTML = "";
+    panel.append(el("div", { class: "normative-layout" }, [toc, content]));
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.append(
+      el("h2", {}, "Справочник недоступен"),
+      el("p", {}, "Не удалось загрузить normative.md: " + (e && e.message || "ошибка")),
+    );
+  }
+}
+
 async function viewGlossary() {
   app.innerHTML = "";
   const panel = el("div", { class: "panel glossary" }, [el("p", {}, "Загрузка словаря…")]);
@@ -1238,6 +1318,23 @@ async function viewGlossary() {
     panel.append(
       el("h2", {}, "Словарь недоступен"),
       el("p", {}, "Не удалось загрузить глоссарий: " + (e && e.message || "ошибка")),
+    );
+  }
+}
+
+// ---------- источники (собранные ссылки на документацию) ----------
+async function viewSources() {
+  app.innerHTML = "";
+  const panel = el("div", { class: "panel glossary" }, [el("p", {}, "Загрузка источников…")]);
+  app.append(panel);
+  try {
+    const md = await api.get("/api/reference/sources");
+    panel.innerHTML = mdToHtml(md);
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.append(
+      el("h2", {}, "Источники недоступны"),
+      el("p", {}, "Не удалось загрузить список источников: " + (e && e.message || "ошибка")),
     );
   }
 }

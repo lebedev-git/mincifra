@@ -1,132 +1,145 @@
 "use strict";
-// Модель трекера гейтов G0–G5 (отражает 01_tracker/pipeline_tracker.md).
-// Определяет состав пунктов и считает готовность. Статусы пунктов хранятся
-// в data-слое (store.saveTracker/getTracker) как { [itemId]: boolean }.
-// Гейт G3 (техготовность) выводится из отчёта проверок, а не отмечается вручную.
-// Гейт GD (депонирование) выводится из загруженных артефактов dep_*.
+// Модель маршрута подготовки: Депонирование (Роспатент) → Отчуждение права →
+// Регистрация перехода в ФИПС → Карточка (ООО) → Продукт → Артефакты/проверки →
+// Подача. Чек-лист — ПРОЕКЦИЯ ДАННЫХ: каждый пункт закрыт
+// тогда и только тогда, когда его предикат истинен для {карточка, отчёт, артефакты}.
+// Ручных отметок нет — статус нельзя «поставить», он вычисляется из данных.
+// Внешние факты (УКЭП, ЕСИА, долг ЕНС, сверка ПП №325, отправка на портал) —
+// это поля карточки, а не отдельное состояние.
 
 const store = require("./store");
+const { pp325AppliesTo } = require("./class_hint");
 
-// Внутренний листинг фрагмента кода — сырьё авто-подготовки, не считается документом.
+// Внутренний листинг фрагмента кода — сырьё авто-подготовки, не документ.
 const DEPON_RAW = /^dep_codefrag_listing\.txt$/i;
 
-// Определение гейтов. auto:true — пункт вычисляется из проверок (не редактируется).
-// artifacts:true — пункт вычисляется из наличия файла dep_* (тоже не редактируется).
-const GATES = [
-  { id: "G0", title: "Предпосылки", items: [
-    { id: "g0_ru", text: "Правообладатель — рос. юрлицо, РФ-контроль > 50%" },
-    { id: "g0_ukep", text: "УКЭП на руководителя получена" },
-    { id: "g0_esia", text: "Учётная запись организации подтверждена в ЕСИА" },
-    { id: "g0_class", text: "Определён класс ПО (СВЕРИТЬ по ПП № 1236)" },
-    { id: "g0_extra", text: "Проверены доптребования (ПП № 325) — СВЕРИТЬ" },
-    { id: "g0_ens", text: "Нет задолженности на ЕНС > 3000 ₽" },
-  ] },
-  { id: "G1", title: "Пакет документов", items: [
-    { id: "g1_rights", text: "Документы на исключительное право (Роспатент/служебные)" },
-    { id: "g1_egrul", text: "Выписка ЕГРЮЛ, структура владения" },
-    { id: "g1_fin", text: "Бухсправка о выплатах иностранцам < 30%" },
-    { id: "g1_tech", text: "Тех. документация (функции, руководства, ЖЦ)" },
-    { id: "g1_demo", text: "Экземпляр/демо-доступ для эксперта" },
-    { id: "g1_sbom", text: "SBOM + заключение о лицензионной чистоте" },
-  ] },
-  // Депонирование (Роспатент) — отдельный этап после G1. Пункты закрываются
-  // автоматически, когда на «Документах» появляется файл с соответствующим
-  // префиксом kind_ (загружен вручную или сгенерирован). link — куда ведёт
-  // клик по кружку GD в степпере.
-  { id: "GD", title: "Депонирование (Роспатент)", artifacts: true, link: "/docs", items: [
+// --- Мелкие помощники предикатов ---
+function g(obj, pathStr) { return pathStr.split(".").reduce((o, k) => (o == null ? o : o[k]), obj); }
+function ne(v) { return !(v == null || v === "" || (Array.isArray(v) && v.length === 0)); }
+function arr(v) { return Array.isArray(v) ? v : []; }
+function toNum(v) { if (v == null || v === "") return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+function hasArt(ctx, hint) { return ctx.names.some((n) => n.includes(hint)); }
+function hasKind(ctx, kind) {
+  const prefix = kind.toLowerCase() + "_";
+  return ctx.names.some((n) => n.startsWith(prefix) && !DEPON_RAW.test(n));
+}
+function pass(ctx, checkId) { return ctx.reportById[checkId] === "PASS"; }
+
+// --- Определение стадий ---
+// item.done(ctx) — предикат. item.applicable(ctx) (опц.) — показывать ли пункт.
+// stage.link — куда ведёт клик по стадии/пункту (относительно #/p/:id).
+// Порядок стадий = логический маршрут «от Роспатента к реестру»:
+//   депонирование (физлицо) → отчуждение права → регистрация перехода в ФИПС →
+//   предпосылки ООО (карточка) → продукт → проверки → подача в Минцифру.
+const STAGES = [
+  { id: "depon", title: "Депонирование (Роспатент)", link: "/docs", items: [
     { id: "gd_snapshot", text: "Снимок версии кода + акт фиксации (SHA-256)", kind: "dep_snapshot" },
     { id: "gd_referat", text: "Реферат программы", kind: "dep_referat" },
-    { id: "gd_codefrag", text: "Фрагмент исходного кода (до 70 стр.)", kind: "dep_codefrag" },
-    { id: "gd_chain", text: "Цепочка прав (служебные задания, договоры, акты)", kind: "dep_chain" },
+    { id: "gd_codefrag", text: "Фрагмент исходного кода (до 50 стр.)", kind: "dep_codefrag" },
     { id: "gd_statement", text: "Заявление в Роспатент, подписанное УКЭП", kind: "dep_statement" },
     { id: "gd_cert", text: "Свидетельство о госрегистрации ПО", kind: "dep_cert" },
   ] },
-  { id: "G2", title: "Страница продукта", items: [
-    { id: "g2_url", text: "Публичный URL, доступен из инкогнито" },
-    { id: "g2_content", text: "Опубликованы функции, установка, ЖЦ, ТП" },
-    { id: "g2_contacts", text: "Контакты техподдержки в РФ" },
-    { id: "g2_price", text: "Порядок ценообразования / прайс опубликован" },
-    { id: "g2_ru_host", text: "Сайт хостится в РФ" },
+  // Стадии трека Минцифры (отчуждение → ФИПС → карточка → продукт → проверки → подача)
+  // скрыты: платформа сфокусирована ТОЛЬКО на подаче в Роспатент. Логика цела —
+  // снять hidden, когда понадобится реестр.
+  { id: "assign", title: "Отчуждение права (физлицо → ООО)", link: "/docs", hidden: true, items: [
+    { id: "as_contract", text: "Договор отчуждения исключительного права (ст. 1234 ГК)", kind: "dep_assign_contract" },
+    { id: "as_act", text: "Акт приёма-передачи", kind: "dep_assign_act" },
   ] },
-  { id: "G3", title: "Техническая готовность", auto: true, items: [
-    { id: "g3_30", text: "Правило 30% — выплаты иностранцам < 30%", check: "foreign_payments" },
-    { id: "g3_lic", text: "Лицензии OSS — нет GPL/AGPL/no-license", check: "license_scan" },
-    { id: "g3_net", text: "Сетевой аудит — нет обращений за рубеж", check: "network_audit" },
-    { id: "g3_page", text: "Страница продукта — атрибуты в норме", check: "page_check" },
+  { id: "register", title: "Регистрация перехода в ФИПС (ст. 1232)", link: "/docs", hidden: true, items: [
+    { id: "rg_statement", text: "Заявление о регистрации отчуждения (ст. 1232 п.2, 1262 п.5)", kind: "dep_assign_register" },
+    { id: "rg_notice", text: "Уведомление ФИПС о состоявшейся регистрации перехода",
+      done: (c) => g(c.p, "rights.transferRegistered") === true },
   ] },
-  { id: "G4", title: "Подача на портале", items: [
-    { id: "g4_auth", text: "Авторизация на reestr.digital.gov.ru через ЕСИА" },
-    { id: "g4_card", text: "Заполнена карточка ПО" },
-    { id: "g4_docs", text: "Приложены документы (СВЕРИТЬ форматы)" },
-    { id: "g4_decl", text: "Указаны сведения о соответствии ПП № 1236" },
-    { id: "g4_ukep", text: "Заявление подписано УКЭП" },
-    { id: "g4_send", text: "Нажато «Отправить документы на проверку»" },
+  { id: "card", title: "Карточка", link: "", hidden: true, items: [
+    { id: "card_org", text: "Правообладатель — рос. юрлицо, РФ-контроль > 50%",
+      done: (c) => ne(g(c.p, "rightholder.orgName")) && ne(g(c.p, "rightholder.inn")) && (toNum(g(c.p, "rightholder.ruControlSharePercent")) || 0) > 50 },
+    { id: "card_ukep", text: "УКЭП на руководителя получена",
+      done: (c) => g(c.p, "rightholder.signatory.hasUKEP") === true },
+    { id: "card_esia", text: "Учётная запись организации подтверждена в ЕСИА",
+      done: (c) => g(c.p, "rightholder.esiaConfirmed") === true },
+    { id: "card_ens", text: "Нет задолженности на ЕНС > 3000 ₽",
+      done: (c) => g(c.p, "rightholder.noEnsDebt") === true },
+    { id: "card_pp325", text: "Доптребования ПП № 325 сверены",
+      applicable: (c) => pp325AppliesTo(arr(g(c.p, "product.class"))),
+      done: (c) => g(c.p, "compliance.pp325Checked") === true },
+    { id: "card_fin", text: "Указаны выручка и выплаты иностранцам",
+      done: (c) => toNum(g(c.p, "finance.annualRevenueProduct")) !== null && toNum(g(c.p, "finance.annualForeignPayments")) !== null },
   ] },
-  { id: "G5", title: "Сопровождение", items: [
-    { id: "g5_track", text: "Статус отслеживается в личном кабинете" },
-    { id: "g5_reply", text: "Ответы эксперту в срок" },
-    { id: "g5_formal", text: "Формальная проверка пройдена" },
-    { id: "g5_expert", text: "Содержательная экспертиза пройдена" },
-    { id: "g5_order", text: "Приказ Минцифры о включении получен" },
+  { id: "product", title: "Продукт", link: "/product", hidden: true, items: [
+    { id: "prod_class", text: "Определён класс ПО (СВЕРИТЬ по ПП № 1236)",
+      done: (c) => arr(g(c.p, "product.class")).length > 0 },
+    { id: "prod_core", text: "Наименование, модель поставки, описание",
+      done: (c) => ne(g(c.p, "product.name")) && ne(g(c.p, "product.deliveryType")) && ne(g(c.p, "product.description")) },
+    { id: "prod_url", text: "Публичный URL страницы продукта",
+      done: (c) => ne(g(c.p, "product.productPageUrl")) },
+    { id: "prod_contacts", text: "Контакты техподдержки в РФ",
+      done: (c) => ne(g(c.p, "support.contactsRu")) },
+    { id: "prod_price", text: "Опубликован порядок ценообразования / прайс",
+      done: (c) => ne(g(c.p, "product.pricingUrl")) },
+    { id: "prod_demo", text: "Демо/экземпляр для эксперта",
+      done: (c) => ne(g(c.p, "product.expertDemo.url")) },
+    { id: "prod_lifecycle", text: "Документация жизненного цикла",
+      done: (c) => ne(g(c.p, "support.lifecycleDocUrl")) },
+  ] },
+  { id: "checks", title: "Артефакты и проверки", link: "/checks", hidden: true, items: [
+    { id: "chk_sbom", text: "SBOM загружен",
+      done: (c) => hasArt(c, "sbom") || hasArt(c, "cyclonedx") || hasArt(c, "bom") },
+    { id: "chk_har", text: "Сетевой аудит (HAR) загружен",
+      done: (c) => hasArt(c, "network") || hasArt(c, ".har") },
+    { id: "chk_30", text: "Правило 30% — выплаты иностранцам < 30%", done: (c) => pass(c, "foreign_payments") },
+    { id: "chk_lic", text: "Лицензии OSS — нет GPL/AGPL/no-license", done: (c) => pass(c, "license_scan") },
+    { id: "chk_net", text: "Сетевой аудит — нет обращений за рубеж", done: (c) => pass(c, "network_audit") },
+    { id: "chk_page", text: "Страница продукта — атрибуты в норме", done: (c) => pass(c, "page_check") },
+  ] },
+  { id: "submit", title: "Подача", link: "/submit", hidden: true, items: [
+    { id: "sub_ready", text: "Все предыдущие стадии закрыты", done: (c) => c.prevComplete },
+    { id: "sub_ukep", text: "Заявление подписано УКЭП", done: (c) => g(c.p, "rightholder.signatory.hasUKEP") === true },
+    { id: "sub_sent", text: "Отправлено на проверку на портале", done: (c) => g(c.p, "submission.sentToPortal") === true },
   ] },
 ];
 
-// Строит статус пункта G3 из отчёта проверок: PASS→true, иначе false.
-function autoStateFromReport(report) {
-  const map = {};
-  const byId = {};
-  (report && report.results ? report.results : []).forEach((r) => { byId[r.id] = r.status; });
-  for (const gate of GATES) {
-    if (!gate.auto) continue;
-    for (const it of gate.items) {
-      map[it.id] = byId[it.check] === "PASS";
-    }
-  }
-  return map;
-}
-
-// Строит статус пунктов GD из артефактов: файл с префиксом kind_ есть → true.
-function autoStateFromArtifacts(id) {
+// Строит проекцию маршрута для продукта id.
+function buildTracker(id) {
+  const p = store.getProduct(id);
+  const report = store.getReport(id);
   const names = (store.listArtifacts(id) || [])
     .map((a) => String(a && a.name ? a.name : a).toLowerCase());
-  const map = {};
-  for (const gate of GATES) {
-    if (!gate.artifacts) continue;
-    for (const it of gate.items) {
-      const prefix = it.kind.toLowerCase() + "_";
-      map[it.id] = names.some((n) => n.startsWith(prefix) && !DEPON_RAW.test(n));
-    }
-  }
-  return map;
-}
+  const reportById = {};
+  (report && report.results ? report.results : []).forEach((r) => { reportById[r.id] = r.status; });
 
-// Возвращает трекер с рассчитанной готовностью. Сливает ручные статусы (store)
-// с авто-статусами G3 (из отчёта проверок) и GD (из артефактов депонирования).
-function buildTracker(id) {
-  const manual = store.getTracker(id) || {};
-  const report = store.getReport(id);
-  const auto = autoStateFromReport(report);
-  const artAuto = autoStateFromArtifacts(id);
+  const ctx = { p, report, names, reportById, prevComplete: false };
 
   let doneTotal = 0, itemsTotal = 0;
-  const gates = GATES.map((g) => {
-    const items = g.items.map((it) => {
-      const done = g.auto ? !!auto[it.id] : g.artifacts ? !!artAuto[it.id] : !!manual[it.id];
-      itemsTotal++; if (done) doneTotal++;
-      return { ...it, done };
-    });
-    const done = items.filter((i) => i.done).length;
-    return {
-      id: g.id, title: g.title, auto: !!g.auto, artifacts: !!g.artifacts, link: g.link || null,
-      items, done, total: items.length,
-      complete: done === items.length,
-      percent: items.length ? Math.round((done / items.length) * 100) : 0,
-    };
-  });
+  const stages = [];
+  for (let i = 0; i < STAGES.length; i++) {
+    const s = STAGES[i];
+    // Стадия «Подача» зависит от закрытия стадий 1–4.
+    if (s.id === "submit") ctx.prevComplete = stages.every((st) => st.complete);
 
+    const items = s.items
+      .filter((it) => !it.applicable || it.applicable(ctx))
+      .map((it) => {
+        const done = it.kind ? hasKind(ctx, it.kind) : !!it.done(ctx);
+        return { id: it.id, text: it.text, done };
+      });
+    const done = items.filter((x) => x.done).length;
+    // Скрытые стадии (checks/submit) не считаем в прогрессе и не показываем в трекере,
+    // пока платформа сфокусирована на роспатентной части.
+    if (!s.hidden) { itemsTotal += items.length; doneTotal += done; }
+    stages.push({
+      id: s.id, title: s.title, link: s.link || "", hidden: !!s.hidden,
+      items, done, total: items.length,
+      complete: items.length > 0 && done === items.length,
+      percent: items.length ? Math.round((done / items.length) * 100) : 100,
+    });
+  }
+
+  const next = stages.find((s) => !s.hidden && !s.complete);
   return {
     productId: id,
-    gates,
+    stages,
+    nextStageId: next ? next.id : null,
     percent: itemsTotal ? Math.round((doneTotal / itemsTotal) * 100) : 0,
     done: doneTotal, total: itemsTotal,
     hasReport: !!report,
@@ -134,16 +147,4 @@ function buildTracker(id) {
   };
 }
 
-// Обновляет ручные статусы (auto-гейты игнорируются). patch: { itemId: bool }.
-function updateManual(id, patch) {
-  const manual = store.getTracker(id) || {};
-  const autoIds = new Set(GATES.filter((g) => g.auto || g.artifacts).flatMap((g) => g.items.map((i) => i.id)));
-  for (const [k, v] of Object.entries(patch || {})) {
-    if (autoIds.has(k)) continue; // авто-пункты (проверки/артефакты) не редактируются вручную
-    manual[k] = !!v;
-  }
-  store.saveTracker(id, manual);
-  return buildTracker(id);
-}
-
-module.exports = { GATES, buildTracker, updateManual, autoStateFromReport, autoStateFromArtifacts };
+module.exports = { STAGES, buildTracker };

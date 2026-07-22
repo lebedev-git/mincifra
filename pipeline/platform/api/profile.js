@@ -17,6 +17,14 @@ const FIELDS = [
   ["rightholder.ruControlSharePercent", "number"],
   ["rightholder.signatory.name", "string"],
   ["rightholder.signatory.position", "string"],
+  // Автор-физлицо (Схема B): на него оформляется депонирование ПрЭВМ в Роспатенте,
+  // затем исключительное право отчуждается правообладателю (rightholder = ООО).
+  // Единый автор на всю установку — заполняется один раз.
+  ["author.fullName", "string"],
+  ["author.birthDate", "string"],
+  ["author.citizenship", "string"],
+  ["author.snils", "string"],
+  ["author.address", "string"],
   ["support.contactFio", "string"],
   ["support.contactEmail", "string"],
   ["support.contactPhone", "string"],

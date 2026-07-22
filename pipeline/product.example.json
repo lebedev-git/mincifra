@@ -1,25 +1,31 @@
 {
   "$schema_note": "Карточка продукта — единый источник истины пайплайна. Скопируйте в product.json и заполните под свой продукт. Значения-примеры условны.",
-
   "product": {
     "name": "Пример: Система управления складом «СкладПро»",
     "shortName": "СкладПро",
     "version": "1.0",
-    "class": ["04.09"],
+    "class": [
+      "04.09"
+    ],
     "class_note": "Класс(ы) по классификатору ПП РФ № 1236. СВЕРИТЬ актуальный код на reestr.digital.gov.ru перед подачей.",
     "deliveryType": "SaaS",
-    "deliveryType_options": ["SaaS", "on-prem", "hybrid"],
+    "deliveryType_options": [
+      "SaaS",
+      "on-prem",
+      "hybrid"
+    ],
     "description": "Веб-система управления складским учётом: приёмка, размещение, комплектация и отгрузка товаров, инвентаризация, интеграция с 1С. Многопользовательский режим с ролевой моделью доступа.",
     "purpose": "Автоматизация складских операций малого и среднего бизнеса; ведение остатков в реальном времени, адресное хранение, печать этикеток и накладных.",
     "guiLanguage": "ru",
     "productPageUrl": "https://example.ru/skladpro",
+    "pricingUrl": "https://example.ru/skladpro/pricing",
+    "pricingUrl_note": "Публичный порядок ценообразования / прайс. Требование ПП № 1236 к странице продукта.",
     "expertDemo": {
       "url": "https://demo.example.ru/skladpro",
       "login": "expert",
       "password": "выдаётся эксперту в заявлении"
     }
   },
-
   "rightholder": {
     "orgName": "ООО «Пример»",
     "inn": "1600123454",
@@ -27,35 +33,50 @@
     "address": "г. Казань, ул. Примерная, д. 1",
     "ruControlSharePercent": 100,
     "ruControlShare_note": "Суммарная доля прямого/косвенного участия РФ, субъектов, муниципалитетов и граждан РФ. Требование ПП № 1236: > 50%.",
+    "esiaConfirmed": true,
+    "esiaConfirmed_note": "Учётная запись организации подтверждена в ЕСИА (Госуслуги). Внешний факт — отметить после подтверждения.",
+    "noEnsDebt": true,
+    "noEnsDebt_note": "Нет задолженности на едином налоговом счёте свыше 3000 ₽. Внешний факт.",
     "signatory": {
       "name": "Иванов Иван Иванович",
       "position": "Генеральный директор",
       "hasUKEP": true
     }
   },
-
   "rights": {
     "basis": "rospatent",
-    "basis_options": ["rospatent", "internal_docs"],
-    "rospatentCertificateNumber": "2024600000",
-    "rospatentCertificateDate": "2024-01-01",
-    "codeDeposited": true,
+    "basis_options": [
+      "rospatent",
+      "internal_docs"
+    ],
+    "depSubmitted": false,
+    "depSubmitted_note": "Схема B: заявка на депонирование ПрЭВМ подана в Роспатент на автора-физлицо (ждём свидетельство). Статус права вычисляется в core/rights.js.",
+    "rospatentCertificateNumber": "",
+    "rospatentCertificateDate": "",
+    "codeDeposited": false,
     "depositProvider": "Аккредитованный депозитарий / нотариус",
-    "chainOfTitleComplete": true,
-    "chainOfTitle_note": "Трудовые договоры + служебные задания + акты на служебные произведения (ст. 1295 ГК РФ) по каждому разработчику, либо договоры отчуждения/авторского заказа с подрядчиками."
+    "chainOfTitleComplete": false,
+    "chainOfTitle_note": "Трудовые договоры + служебные задания + акты на служебные произведения (ст. 1295 ГК РФ) по каждому разработчику, либо договоры отчуждения/авторского заказа с подрядчиками.",
+    "transferRegistered": false,
+    "transferRegistrationNumber": "",
+    "transferRegistrationDate": "",
+    "transferRegistered_note": "ст. 1232 п.2 / 1262 п.5 ГК РФ: переход исключительного права на ЗАРЕГИСТРИРОВАННУЮ в Роспатенте программу подлежит госрегистрации в ФИПС. Без неё переход несостоявшийся (ст.1232 п.6) → реестр Минцифры завернёт цепочку. Реестр открыт только при transferRegistered=true (core/rights.js: transfer_registered)."
   },
-
   "finance": {
     "currency": "RUB",
     "annualRevenueProduct": 6000000,
     "annualForeignPayments": 500000,
     "foreignPayments_note": "Сумма выплат иностранным правообладателям за права на ПО и его компоненты за год. Требование ПП № 1236: строго < 30% выручки по продукту."
   },
-
   "tech": {
-    "supportedOS": ["Astra Linux", "РЕД ОС"],
+    "supportedOS": [
+      "Astra Linux",
+      "РЕД ОС"
+    ],
     "supportedOS_note": "С 2026 г. для ряда классов — обязательна поддержка минимум 2 российских ОС. СВЕРИТЬ доптребования для своего класса.",
-    "databases": ["PostgreSQL"],
+    "databases": [
+      "PostgreSQL"
+    ],
     "prohibitedDatabases_note": "Стоп-факторы: Oracle, Microsoft SQL Server, SAP HANA.",
     "infraLocation": "RU",
     "cicdLocation": "RU",
@@ -64,14 +85,27 @@
     "networkEvidenceFile": "02_checks/samples/network.sample.har",
     "networkEvidenceFormat": "har"
   },
-
   "support": {
     "provider": "ООО «Пример» (РФ)",
     "hasForeignControl": false,
     "contactsRu": "+7 (843) 000-00-00, support@example.ru",
     "lifecycleDocUrl": "https://example.ru/skladpro/lifecycle"
   },
-
+  "registration": {
+    "deviceType": "Сервер (x86-64)",
+    "deviceType_note": "Тип ЭВМ (устройство) для формы госрегистрации ПрЭВМ на Госуслугах/ФИПС.",
+    "yearCreated": "2024",
+    "gisComponent": false,
+    "gisComponent_note": "Является ли программа компонентом государственной информационной системы (поле формы Госуслуг)."
+  },
+  "compliance": {
+    "pp325Checked": true,
+    "pp325Checked_note": "Доптребования ПП № 325 сверены для выбранного класса (напр. поддержка ≥2 доверенных ОС). Пункт показывается, только если ПП № 325 применимо к классу."
+  },
+  "submission": {
+    "sentToPortal": false,
+    "sentToPortal_note": "Заявление отправлено на проверку на reestr.digital.gov.ru. Внешний факт — отметить после отправки."
+  },
   "strategy": {
     "path": 1,
     "path_note": "1 — оптимальный (Роспатент+депонирование), 2 — средний (внутренние документы), 3 — сложный (углублённый аудит). См. аналитическую записку."
