@@ -15,6 +15,8 @@ const { sendError, sendFile, errWithStatus } = require("./core/http-util");
 
 const WEB_DIR = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT) || 3000;
+// HOST=127.0.0.1 — слушать только localhost (за nginx-прокси). По умолчанию все интерфейсы.
+const HOST = process.env.HOST || "0.0.0.0";
 
 // --- Сборка роутера из API-модулей ---
 const router = new Router();
@@ -66,7 +68,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const store = require("./core/store");
   console.log("═══ Платформа реестра ПО запущена ═══");
   console.log(`  URL:     http://localhost:${PORT}`);
