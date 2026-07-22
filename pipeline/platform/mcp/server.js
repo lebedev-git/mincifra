@@ -27,6 +27,9 @@ const BASE_SAFE = (() => {
 })();
 const SERVER_INFO = { name: "reestr-platform", version: "1.1.0" };
 const PROTOCOL_VERSION = "2024-11-05";
+// Имя клиента — показывается на дашборде платформы («кто подключён», лента действий).
+const CLIENT_NAME = (process.env.REESTR_CLIENT_NAME || "").trim().slice(0, 64) ||
+  (process.env.USERNAME || process.env.USER || "агент");
 
 // --- HTTP-клиент к платформе (JSON in/out) ---
 function httpJson(method, apiPath, body) {
@@ -37,6 +40,7 @@ function httpJson(method, apiPath, body) {
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), "utf8");
     const headers = {
       "Accept": "application/json",
+      "X-Reestr-Client": encodeURIComponent(CLIENT_NAME),
       ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
     };
     // Basic-auth из URL (https://user:pass@host) — стандартный способ защиты за nginx.
@@ -346,4 +350,7 @@ rl.on("line", (line) => {
   try { msg = JSON.parse(s); } catch (_) { return; } // мусор игнорируем
   handle(msg);
 });
-process.stderr.write(`[reestr-mcp] запущен, платформа: ${BASE_SAFE}\n`);
+// Сигнал платформе «клиент подключился» — дашборд показывает имя и время.
+// Ошибку глотаем: платформа может быть ещё не поднята, это не повод падать.
+httpJson("POST", "/api/hello", { name: CLIENT_NAME, client: "mcp" }).catch(() => {});
+process.stderr.write(`[reestr-mcp] запущен (${CLIENT_NAME}), платформа: ${BASE_SAFE}\n`);

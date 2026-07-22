@@ -38,6 +38,13 @@ function db() {
     CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reports (product_id TEXT PRIMARY KEY, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, product_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS presence (
+      actor TEXT PRIMARY KEY, client TEXT, last_seen TEXT NOT NULL
+    );
   `);
   migrateFromFiles(_db);
   return _db;
@@ -219,12 +226,40 @@ function dossierFilePath(id, name) {
   return path.join(dossierDir(id), safeFile(name));
 }
 
+// --- Активность и присутствие (MCP-first дашборд) ---
+// activity — лента действий («кто-когда-что»), presence — последний сигнал клиента.
+// actor приходит из заголовка агента (X-Reestr-Client) либо "веб" для браузера.
+const ACTIVITY_KEEP = 500; // хвост ленты, старое подрезаем — БД не растёт бесконечно
+
+function logActivity(actor, action, productId) {
+  const d = db();
+  d.prepare("INSERT INTO activity (ts, actor, action, product_id) VALUES (?, ?, ?, ?)")
+    .run(new Date().toISOString(), String(actor || "веб"), String(action), productId || null);
+  d.prepare(
+    "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT ?)"
+  ).run(ACTIVITY_KEEP);
+}
+function listActivity(limit = 50) {
+  return db().prepare("SELECT ts, actor, action, product_id FROM activity ORDER BY id DESC LIMIT ?")
+    .all(Number(limit) || 50);
+}
+function touchPresence(actor, client) {
+  db().prepare(
+    "INSERT INTO presence (actor, client, last_seen) VALUES (?, ?, ?) " +
+    "ON CONFLICT(actor) DO UPDATE SET client = excluded.client, last_seen = excluded.last_seen"
+  ).run(String(actor), client || null, new Date().toISOString());
+}
+function listPresence() {
+  return db().prepare("SELECT actor, client, last_seen FROM presence ORDER BY last_seen DESC").all();
+}
+
 module.exports = {
   DATA_DIR, PRODUCTS_DIR, DB_FILE, productDir,
   getProfile, saveProfile,
   listProducts, getProduct, createProduct, saveProduct, deleteProduct,
   saveArtifact, artifactPath, artifactsDir, listArtifacts,
   saveReport, getReport,
+  logActivity, listActivity, touchPresence, listPresence,
   dossierDir, listDossier, dossierFilePath,
   httpError,
 };

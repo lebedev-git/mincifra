@@ -12,6 +12,8 @@ const path = require("path");
 
 const { Router } = require("./core/router");
 const { sendError, sendFile, errWithStatus } = require("./core/http-util");
+const store = require("./core/store");
+const { actorOf } = require("./api/activity");
 
 const WEB_DIR = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT) || 3000;
@@ -32,7 +34,38 @@ const router = new Router();
   require("./api/egrul"),
   require("./api/profile"),
   require("./api/prepare"),
+  require("./api/activity"),
+  require("./api/client"),
 ].forEach((m) => m.register(router));
+
+// --- Лента действий: человекочитаемые события по method+path ---
+// Центральная точка (а не правки в каждом api-модуле): смотрим на маршрут ПОСЛЕ
+// успешного ответа. Только значимые действия — GET-чтение в ленту не пишем.
+const ACTIVITY_RULES = [
+  [/^POST \/api\/products$/, "создал продукт"],
+  [/^PUT \/api\/products\/([^/]+)$/, "обновил карточку"],
+  [/^DELETE \/api\/products\/([^/]+)$/, "удалил продукт"],
+  [/^POST \/api\/products\/([^/]+)\/checks$/, "прогнал проверки"],
+  [/^POST \/api\/products\/([^/]+)\/autofill/, "загрузил проект (снимок кода)"],
+  [/^POST \/api\/products\/([^/]+)\/prepare$/, "загрузил проект по git-ссылке"],
+  [/^POST \/api\/products\/([^/]+)\/depon\/(\w+)$/, "сформировал документ Роспатента"],
+  [/^POST \/api\/products\/([^/]+)\/assign\/(\w+)$/, "сформировал документ отчуждения"],
+  [/^POST \/api\/products\/([^/]+)\/dossier$/, "сгенерировал досье"],
+  [/^POST \/api\/products\/([^/]+)\/rospatent\/autofill$/, "собрал монтажный лист Роспатента"],
+  [/^PUT \/api\/products\/([^/]+)\/artifacts\/(\w+)/, "загрузил артефакт"],
+  [/^PUT \/api\/profile$/, "обновил профиль"],
+];
+function logIfSignificant(req, pathname) {
+  const key = `${req.method} ${pathname}`;
+  for (const [rx, text] of ACTIVITY_RULES) {
+    const m = key.match(rx);
+    if (m) {
+      const productId = m[1] ? decodeURIComponent(m[1]) : null;
+      try { store.logActivity(actorOf(req), text, productId); } catch (_) { /* лента не критична */ }
+      return;
+    }
+  }
+}
 
 // --- Отдача статики (web/) ---
 function serveStatic(req, res, pathname) {
@@ -59,6 +92,14 @@ const server = http.createServer(async (req, res) => {
       if (!hit) { sendError(res, errWithStatus(404, `Маршрут не найден: ${req.method} ${pathname}`)); return; }
       req.params = hit.params;
       await hit.handler(req, res, hit.params);
+      // Успешный значимый вызов → лента + отметка присутствия (обёртка MCP шлёт
+      // X-Reestr-Client; браузер идёт как «веб» и присутствие не засоряет).
+      if (res.statusCode < 400) {
+        logIfSignificant(req, pathname);
+        if (req.headers["x-reestr-client"]) {
+          try { store.touchPresence(actorOf(req), null); } catch (_) { /* не критично */ }
+        }
+      }
       return;
     }
     if (req.method !== "GET") { sendError(res, errWithStatus(405, "Метод не поддерживается")); return; }

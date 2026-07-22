@@ -192,7 +192,7 @@ function prepWizard(id, prepState, onDraft) {
     if (state.mode === "path" && !state.path) { toast("Укажите путь к папке проекта", true); return; }
     if (state.mode === "zip" && !state.zipFile) { toast("Выберите ZIP-архив проекта", true); return; }
     const t0 = btn.textContent; btn.disabled = true; btn.textContent = "Заполняю…";
-    progress.textContent = "Читаю проект, делаю снимок и SHA-256, заполняю карточку черновиком…";
+    progress.textContent = "Читаю проект, делаю снимок версии, заполняю карточку черновиком…";
     try {
       let resp;
       if (state.mode === "zip") {
@@ -205,7 +205,7 @@ function prepWizard(id, prepState, onDraft) {
       const { result, draft } = resp;
       if (onDraft) onDraft(draft, result);
       const bits = [];
-      if (result.archive) bits.push(`снимок готов (SHA-256 ${(result.sha256 || "").slice(0, 12)}…)`);
+      if (result.archive) bits.push("снимок версии готов");
       if (result.sbom) bits.push("SBOM собран");
       toast("Карточка заполнена черновиком — проверьте и «Сохранить»" + (bits.length ? " · " + bits.join(", ") : ""));
       (result.warnings || []).forEach((w) => toast(w, true));
@@ -422,12 +422,76 @@ function dashboardStage(p) {
   return { key: "done", text: "✅ Готово к отправке" };
 }
 
-// ---------- дашборд ----------
+// ---------- дашборд (MCP-first) ----------
+// Главный вход — Claude по MCP. Веб показывает: кто подключён, лента действий,
+// продукты (витрина + скачивание). Никого нет и продуктов нет → экран подключения.
+function fmtAgo(iso) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (s < 60) return "только что";
+  if (s < 3600) return `${Math.round(s / 60)} мин назад`;
+  if (s < 86400) return `${Math.round(s / 3600)} ч назад`;
+  return new Date(iso).toLocaleDateString("ru-RU");
+}
+
+function onboardingPanel(clientUrl) {
+  return el("div", { class: "panel", style: "max-width:640px;margin:40px auto" }, [
+    el("h2", { style: "margin:0 0 6px" }, "Нет подключённых устройств"),
+    el("div", { class: "hint" },
+      "Платформа управляется через Claude (MCP). Подключи клиента — и говори с платформой словами: " +
+      "«создай продукт», «подготовь к Роспатенту», «прогони проверки»."),
+    el("ol", { style: "line-height:1.9;margin:12px 0" }, [
+      el("li", {}, [el("a", { href: "/api/client.zip" }, "⬇ Скачать клиент (reestr-mcp.zip)")]),
+      el("li", {}, "Распаковать, вписать своё имя в .mcp.json — инструкция внутри (README)"),
+      el("li", {}, "Сказать Claude: «список продуктов через reestr-platform»"),
+    ]),
+    el("div", { class: "muted", style: "font-size:12px" },
+      `Сервер: ${clientUrl || "этот адрес"} · экран обновится сам после подключения`),
+  ]);
+}
+
 async function viewDashboard() {
   const { products } = await api.get("/api/products");
+  const act = await api.get("/api/activity").catch(() => ({ connections: [], feed: [] }));
+  const conns = act.connections || [];
+  const feed = act.feed || [];
+
+  // Пусто и никто не подключался → онбординг вместо пустого дашборда.
+  if (!products.length && !conns.length) {
+    const { url } = await api.get("/api/client").catch(() => ({ url: "" }));
+    app.innerHTML = "";
+    app.append(onboardingPanel(url));
+    // Автообновление: человек подключает Claude — экран сам перейдёт в дашборд.
+    setTimeout(() => { if ((location.hash || "#/") .match(/^#?\/?$/)) router(); }, 15000);
+    return;
+  }
+
+  // --- Подключения ---
+  const connRows = conns.map((c) => el("span", { class: "tag",
+    style: c.active ? "color:var(--ok,#2e7d32);border-color:currentColor" : "" },
+    `${c.active ? "●" : "○"} ${c.actor} — ${fmtAgo(c.lastSeen)}`));
+  const connPanel = el("div", { class: "panel" }, [
+    el("div", { class: "row", style: "align-items:center" }, [
+      el("h2", { style: "flex:1;margin:0" }, "Подключения"),
+      el("a", { class: "ghost", href: "/api/client.zip", style: "font-size:13px" }, "⬇ клиент для Claude"),
+    ]),
+    el("div", { class: "row", style: "gap:8px;margin-top:8px;flex-wrap:wrap" },
+      connRows.length ? connRows : [el("span", { class: "muted" }, "Пока никто не подключался по MCP")]),
+  ]);
+
+  // --- Лента действий ---
+  const feedRows = feed.slice(0, 12).map((f) => el("div", { style: "padding:3px 0;font-size:13px" }, [
+    el("span", { class: "muted" }, new Date(f.ts).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) + " "),
+    el("b", {}, f.actor + " "),
+    f.action + (f.product_id ? " · " : ""),
+    f.product_id ? el("a", { href: `#/p/${f.product_id}` }, f.product_id) : null,
+  ]));
+  const feedPanel = feed.length ? el("div", { class: "panel" }, [
+    el("h2", { style: "margin:0 0 6px" }, "Последние действия"), ...feedRows,
+  ]) : null;
+
   const head = el("div", { class: "row", style: "align-items:center;margin-bottom:16px" }, [
     el("h2", { style: "margin:0;color:var(--blue);flex:1" }, `Продукты (${products.length})`),
-    el("button", { onclick: createProduct }, "+ Новый продукт"),
+    el("button", { class: "ghost", onclick: createProduct }, "+ Вручную"),
   ]);
 
   const grid = el("div", { class: "grid" }, products.map((p) => {
@@ -442,9 +506,11 @@ async function viewDashboard() {
   }));
 
   const empty = products.length ? null :
-    el("div", { class: "hint" }, "Продуктов пока нет. Создайте первый — карточка заполнится из шаблона product.example.json.");
+    el("div", { class: "hint" }, "Продуктов пока нет. Скажи Claude: «создай продукт …» — он появится здесь.");
 
   app.innerHTML = "";
+  app.append(connPanel);
+  if (feedPanel) app.append(feedPanel);
   app.append(head, empty || grid);
 }
 
@@ -867,7 +933,7 @@ async function viewDocs(id, forcePrep) {
     btn.disabled = true; const t0 = btn.textContent; btn.textContent = "Готовлю…";
     const step = (s) => { wizProgress.textContent = s; };
     try {
-      step("1/3 — читаю код, делаю снимок и SHA-256…");
+      step("1/3 — читаю код, делаю снимок версии…");
       let patch = null;
       if (zipFile) {
         // ZIP уезжает на сервер сырым телом; заметки — в query.
@@ -908,10 +974,9 @@ async function viewDocs(id, forcePrep) {
     }
   }
   const wizBtn = el("button", { onclick: (e) => runWizard(e.currentTarget) }, "▶ Подготовить к подаче");
-  const wizardPanel = el("div", { class: "panel" }, [
-    el("h2", { style: "margin:0 0 8px" }, "Подача в Роспатент"),
+  const wizardPanel = el("div", {}, [
     el("div", { class: "hint" },
-      "Загрузи ZIP с исходным кодом (или дай git-ссылку) — платформа сама сделает снимок с SHA-256, " +
+      "Загрузи ZIP с исходным кодом (или дай git-ссылку) — платформа сама сделает снимок версии, " +
       "фрагмент кода, реферат и заявление, и покажет поля для формы на Госуслугах. " +
       "Больше ничего заполнять не нужно."),
     el("label", { class: "field" }, [
@@ -926,7 +991,20 @@ async function viewDocs(id, forcePrep) {
   ]);
 
   if (!prepared) {
-    renderShell(id, "depon", tracker, name, "Документы", [wizardPanel]);
+    // MCP-first: главный путь — сказать Claude «подготовь к Роспатенту». Мастер
+    // остаётся запасным ходом (нет Claude под рукой / хочется руками) — за спойлером.
+    const mcpHint = el("div", { class: "panel" }, [
+      el("h2", { style: "margin:0 0 8px" }, "Подача в Роспатент"),
+      el("div", { class: "hint" },
+        "Скажи Claude: «подготовь этот продукт к Роспатенту, репозиторий …» — " +
+        "платформа сделает снимок версии, фрагмент кода, реферат и поля для Госуслуг. " +
+        "Готовые документы появятся здесь."),
+      el("details", { class: "help" }, [
+        el("summary", {}, "Подготовить вручную (без Claude)"),
+        el("div", { class: "body" }, [wizardPanel]),
+      ]),
+    ]);
+    renderShell(id, "depon", tracker, name, "Документы", [mcpHint]);
     return;
   }
 
@@ -972,7 +1050,7 @@ async function viewDocs(id, forcePrep) {
 
   // --- Блок 2: «Скачай и приложи» — что грузить на Госуслуги, а что хранить у себя ---
   const FILE_LABELS = {
-    dep_snapshot: "Снимок кода + акт фиксации (SHA-256)",
+    dep_snapshot: "Снимок кода + акт фиксации версии",
     dep_referat: "Реферат программы",
     dep_codefrag: "Фрагмент исходного кода",
     dep_statement: "Заявление (шпаргалка значений)",
