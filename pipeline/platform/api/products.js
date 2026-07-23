@@ -1,32 +1,30 @@
 "use strict";
 // API карточек продуктов (CRUD). Создание — из шаблона product.example.json.
 
-const fs = require("fs");
-const path = require("path");
 const store = require("../core/store");
 const tracker = require("../core/tracker");
 const rights = require("../core/rights");
 const { cardCompleteness } = require("../core/readiness");
 const { readJsonBody, sendJson } = require("../core/http-util");
 
-const TEMPLATE_PATH = path.resolve(__dirname, "../../product.example.json");
-
-// Рекурсивно убирает служебные ключи-подсказки шаблона (*_note, *_options,
-// $schema_note), чтобы они не сохранялись в карточку продукта и не засоряли данные.
-// Код (UI, генерация, проверки) на эти ключи не опирается.
-function stripHelperKeys(obj) {
-  if (Array.isArray(obj)) { obj.forEach(stripHelperKeys); return obj; }
-  if (obj && typeof obj === "object") {
-    for (const k of Object.keys(obj)) {
-      if (/(_note|_options)$/.test(k) || k === "$schema_note") delete obj[k];
-      else stripHelperKeys(obj[k]);
-    }
-  }
-  return obj;
-}
-
-function loadTemplate() {
-  return stripHelperKeys(JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf8")));
+// Пустая карточка: структура полей есть, значения пустые. Прогресс честный (0%),
+// без «заглушек» из примера. Реквизиты правообладателя вольются из профиля.
+function emptyCard() {
+  return {
+    product: {
+      name: "", shortName: "", version: "", class: [],
+      deliveryType: "", guiLanguage: "ru", description: "", purpose: "",
+      programmingLanguages: [], productPageUrl: "", pricingUrl: "",
+    },
+    rightholder: {},
+    rights: { basis: "", authors: [] },
+    finance: { currency: "RUB" },
+    tech: { supportedOS: [], databases: [], infraLocation: "RU" },
+    support: {},
+    registration: {},
+    compliance: {},
+    submission: {},
+  };
 }
 
 // Вливает значения единого профиля правообладателя в карточку поверх шаблона.
@@ -89,17 +87,15 @@ function register(router) {
 
   router.post("/api/products", async (req, res) => {
     const body = await readJsonBody(req);
-    const template = loadTemplate();
-    // Реквизиты правообладателя и контакты ТП — из единого профиля (заполняется один раз).
-    applyProfile(template, store.getProfile());
-    // Позволяем задать имя при создании; остальное — из шаблона (правится в UI).
+    // Пустая карточка (без примера-заглушки) + реквизиты правообладателя из профиля.
+    const card = emptyCard();
+    applyProfile(card, store.getProfile());
     if (body.name) {
-      template.product = template.product || {};
-      template.product.name = body.name;
-      template.product.shortName = body.shortName || body.name;
+      card.product.name = body.name;
+      card.product.shortName = body.shortName || body.name;
     }
-    const id = store.createProduct(template, body.shortName || body.name || (template.product && template.product.shortName));
-    sendJson(res, 201, { id, product: template });
+    const id = store.createProduct(card, body.shortName || body.name || card.product.shortName);
+    sendJson(res, 201, { id, product: card });
   });
 
   router.get("/api/products/:id", (req, res) => {

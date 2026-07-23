@@ -9,10 +9,14 @@
   },
   "peerDependencies": {
     "docx": ">=8",
+    "pdfkit": ">=0.15",
     "playwright": ">=1.40"
   },
   "peerDependenciesMeta": {
     "docx": {
+      "optional": true
+    },
+    "pdfkit": {
       "optional": true
     },
     "playwright": {

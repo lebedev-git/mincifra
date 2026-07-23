@@ -1,0 +1,10 @@
+{
+  "name": "mincifra-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Корневой манифест деплоя: генераторы документов в pipeline/03_docs резолвят зависимости отсюда, поэтому docx (DOCX) и pdfkit (PDF) устанавливаются в корень.",
+  "dependencies": {
+    "docx": "^9.0.0",
+    "pdfkit": "^0.19.1"
+  }
+}

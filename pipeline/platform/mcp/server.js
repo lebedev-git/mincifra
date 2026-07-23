@@ -206,7 +206,7 @@ const TOOLS = [
       "ОДИН вызов: загрузить проект → получить всё для подачи программы для ЭВМ в Роспатент через Госуслуги/ФИПС (на физлицо). " +
       "source = путь к папке проекта на этом ПК ИЛИ git-URL (как scan_project). " +
       "productId (необязательно) = подготовить СУЩЕСТВУЮЩИЙ продукт из list_products; без него создаётся новый. " +
-      "Делает снимок кода + SHA-256, фрагмент кода (50 стр.), генерит .docx (реферат, акт фиксации версии, фрагмент, заявление ДоЭВМ) " +
+      "Делает снимок версии кода, фрагмент кода (50 стр.), генерит два PDF (Реферат + Фрагмент кода, Times New Roman) " +
       "и возвращает готовый лист полей формы «Сведения о программе» + реферат ≤900 симв. " +
       "Свидетельство и цепочку прав НЕ трогает — это чистый роспатентный трек для физлица.",
     inputSchema: {
@@ -254,22 +254,20 @@ const TOOLS = [
         }
       }
 
-      // 3) Идентифицирующие материалы (ст. 1262 ГК): реферат + фрагмент кода — только
-      //    они грузятся в заявку на Госуслугах. Снимок — доказательство версии, для себя.
-      //    Порядок: фрагмент раньше реферата — он фиксирует язык из листинга и удаляет сырьё.
-      const KINDS = ["dep_snapshot", "dep_codefrag", "dep_referat"];
+      // 3) Идентифицирующие материалы (ст. 1262 ГК): Реферат + Фрагмент кода — два PDF
+      //    (Times New Roman), только они грузятся в заявку. Строятся из свежего листинга
+      //    (он ещё существует после шага 2); эндпоинт сам фиксирует язык и удаляет сырьё.
       const documents = [];
-      for (const kind of KINDS) {
-        try {
-          const g = await httpJson("POST", `/api/products/${encodeURIComponent(id)}/depon/${kind}`);
-          const d = g.generated || {};
+      try {
+        const pdf = await httpJson("POST", `/api/products/${encodeURIComponent(id)}/rospatent/pdf`);
+        for (const d of (pdf.documents || [])) {
           documents.push({
-            kind, title: d.title, file: d.name, bytes: d.bytes,
+            kind: d.kind, title: d.title, file: d.name, bytes: d.bytes,
             downloadUrl: `/api/products/${encodeURIComponent(id)}/artifacts/file/${encodeURIComponent(d.name)}`,
           });
-        } catch (e) {
-          documents.push({ kind, error: e.message });
         }
+      } catch (e) {
+        documents.push({ error: e.message });
       }
 
       // 4) Лист полей формы Госуслуг / ФИПС + реферат. Сначала автозаполнение
@@ -279,9 +277,9 @@ const TOOLS = [
 
       // 5) Мягкая диагностика: чего не хватает для чистовой подачи.
       const missing = [];
-      if (!sha256) missing.push("SHA-256 снимка кода не посчитан — проверь путь/доступность источника.");
+      if (!sha256) missing.push("Снимок версии кода не создан — проверь путь/доступность источника.");
       if (!ros.authorFilled) missing.push("Профиль автора-физлица пуст (ФИО, СНИЛС, адрес) — заполни в «Профиль», иначе заявление ДоЭВМ с прочерками.");
-      documents.filter((d) => d.error).forEach((d) => missing.push(`Документ ${d.kind}: ${d.error}`));
+      documents.filter((d) => d.error).forEach((d) => missing.push(`PDF не собран: ${d.error}`));
 
       return {
         productId: id,
@@ -296,7 +294,7 @@ const TOOLS = [
         },
         documents,
         missing,
-        hint: "Скопируй gosuslugi.fields в форму «Сведения о программе» на Госуслугах/ФИПС; скачай documents (.docx) для приложения. Свидетельство придёт из Роспатента отдельно.",
+        hint: "Скопируй gosuslugi.fields в форму «Сведения о программе» на Госуслугах/ФИПС; приложи два PDF из documents (Реферат + Фрагмент кода). Свидетельство придёт из Роспатента отдельно.",
       };
     },
   },

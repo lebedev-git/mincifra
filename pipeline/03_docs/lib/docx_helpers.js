@@ -52,7 +52,8 @@ const {
   BorderStyle, WidthType, ShadingType, VerticalAlign, PageNumber, PageBreak,
 } = docx;
 
-const FONT = "Arial";
+// Times New Roman — стандартный шрифт документов Роспатента (реферат, фрагмент кода).
+const FONT = "Times New Roman";
 const BLUE = "1F4E79";
 const GREY = "CCCCCC";
 

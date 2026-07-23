@@ -999,16 +999,8 @@ async function viewDocs(id, forcePrep) {
   const filesPanel = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
       el("h2", { style: "flex:1;margin:0" }, "Скачай и приложи к заявке"),
-      el("button", { class: "ghost", onclick: async () => {
-        try { await api.post(`/api/products/${id}/artifacts/open-folder`); }
-        catch (e) { toast(e.message || "Не удалось открыть папку", true); }
-      } }, "📂 Открыть папку"),
     ]),
     el("table", {}, [el("tr", {}, [el("th", {}, "Документ"), el("th", {}, "Файл"), el("th", {}, "")]), ...dlRows]),
-    el("div", { class: "row", style: "margin-top:10px;align-items:center;gap:8px" }, [
-      el("span", { class: "muted" }, "Пришло свидетельство из Роспатента?"),
-      uploader(id, "dep_cert", "PDF", ".pdf,.png,.jpg,.jpeg", () => viewDocs(id)),
-    ]),
   ]);
 
   renderShell(id, "depon", tracker, name, "Роспатент", [gosuslugiPanel, filesPanel]);
