@@ -8,11 +8,14 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <h1>Реестр российского ПО — платформа подготовки</h1>
-      <div class="sub">подготовка и самопроверка перед подачей в Минцифры</div>
+    <div class="brand">
+      <div class="brand-mark">Р</div>
+      <div>
+        <h1>Реестр российского ПО — платформа подготовки</h1>
+        <div class="sub">подготовка и самопроверка перед подачей в Минцифры</div>
+      </div>
     </div>
-    <nav>
+    <nav id="topnav">
       <a href="#/">Продукты</a>
       <a href="#/profile">Профиль</a>
       <a href="#/glossary">Словарь</a>
@@ -21,6 +24,20 @@
       <a href="#/about">О платформе</a>
     </nav>
   </header>
+  <script>
+    // Подсветка активной вкладки по текущему hash (routing — на хэшах, см. app.js).
+    (function () {
+      var nav = document.getElementById("topnav");
+      function mark() {
+        var h = location.hash || "#/";
+        var base = "#/" + (h.replace(/^#\/?/, "").split("/")[0] || "");
+        nav.querySelectorAll("a").forEach(function (a) {
+          a.classList.toggle("active", a.getAttribute("href") === base);
+        });
+      }
+      addEventListener("hashchange", mark); mark();
+    })();
+  </script>
 
   <main class="container" id="app">
     <!-- рендерится app.js -->
