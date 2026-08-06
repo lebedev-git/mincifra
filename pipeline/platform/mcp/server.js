@@ -154,6 +154,13 @@ function zipLocalDir(dir) {
     // Успех определяем по файлу, а не по коду возврата: PowerShell/git ведут себя по-разному.
     if (r.status === 0 && fs.existsSync(zip) && fs.statSync(zip).size > 0) {
       const buffer = fs.readFileSync(zip);
+      // Платформа принимает только ZIP (проверяет сигнатуру PK). GNU tar по `-a .zip`
+      // молча делает TAR — отбрасываем такой архив и пробуем следующий архиватор,
+      // иначе на сервер уедет tar под видом zip.
+      if (buffer.slice(0, 2).toString("latin1") !== "PK") {
+        try { fs.rmSync(zip, { force: true }); } catch (_) {}
+        continue;
+      }
       if (buffer.length > MAX_ZIP_BYTES) {
         cleanup();
         throw new Error(
