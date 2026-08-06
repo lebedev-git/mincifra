@@ -526,6 +526,9 @@ async function viewProduct(id, stage) {
   const tracker = await loadTracker(id);
   const egrulStatus = await api.get("/api/egrul/status").catch(() => ({ enabled: false }));
   const prepState = stage === "product" ? await api.get("/api/prepare/status").catch(() => null) : null;
+  // Авторы для привязки к заявке берутся из профиля (там их список и заводится).
+  const profAuthors = stage === "product"
+    ? ((await api.get("/api/profile").catch(() => ({}))).profile || {}).authors || [] : [];
   const p = product.product || {};
 
   // Плоские поля формы: [путь, подпись, тип, подсказка?, стадия]. Тип "bool" — чекбокс
@@ -571,9 +574,19 @@ async function viewProduct(id, stage) {
     ["tech.databases", "СУБД", "multi:PostgreSQL|Postgres Pro|ClickHouse|YDB|Tarantool|Ред База Данных|встроенная (SQLite/файловая)|не используется", null, "product"],
     ["tech.infraLocation", "Локация инфраструктуры", "select:RU,иное", null, "product"],
     ["registration.deviceType", "Тип ЭВМ (для госрегистрации ПрЭВМ)", "text", "Госуслуги / ФИПС", "product"],
-    ["registration.yearCreated", "Год создания", "text", "Госуслуги / ФИПС", "product"],
-    ["registration.gisComponent", "Является компонентом ГИС", "bool", "Госуслуги / ФИПС", "product"],
+    ["registration.yearCreated", "Год создания", "text", "графа 4 заявления", "product"],
+    ["publication.country", "Страна обнародования", "text", "графа 5 — если выпущена в свет", "product"],
+    ["publication.year", "Год обнародования", "text", "графа 5 — если выпущена в свет", "product"],
+    ["personalData.contains", "Обрабатывает персональные данные", "bool", "графа 3", "product"],
+    ["personalData.operatorRegNumber", "Номер в реестре операторов ПДн", "text", "графа 3 — если да", "product"],
   ];
+  // Привязка авторов к заявке. Поле появляется, только когда авторы заведены в
+  // профиле; пустой выбор = все авторы профиля (см. resolveAuthors в core/rospatent.js).
+  if (profAuthors.length) {
+    ALL_FIELDS.push(["registration.authors", "Авторы в этой заявке (графа 7)",
+      "multi:" + profAuthors.map((a) => a.fullName).join("|"),
+      "пусто = все авторы профиля", "product"]);
+  }
   const fields = ALL_FIELDS.filter((f) => f[4] === stage);
 
   function getVal(pathStr) {
@@ -1127,11 +1140,6 @@ async function viewProfile() {
     ["rightholder.ruControlSharePercent", "Доля РФ-контроля, %", "number"],
     ["rightholder.signatory.name", "Подписант — ФИО", "text"],
     ["rightholder.signatory.position", "Подписант — должность", "text"],
-    ["author.fullName", "Автор (физлицо) — ФИО", "text"],
-    ["author.birthDate", "Автор — дата рождения", "text"],
-    ["author.citizenship", "Автор — гражданство", "text"],
-    ["author.snils", "Автор — СНИЛС", "text"],
-    ["author.address", "Автор — адрес места жительства", "text"],
     ["support.contactFio", "Контакт ТП — ФИО", "text"],
     ["support.contactEmail", "Контакт ТП — email", "text"],
     ["support.contactPhone", "Контакт ТП — телефон", "text"],
@@ -1168,16 +1176,73 @@ async function viewProfile() {
     finally { btn.disabled = false; btn.textContent = t0; }
   }
 
+  // --- Авторы (графы 2, 7, 7А заявления) ---
+  // Список: сколько людей реально писали код. Первый автор считается заявителем-
+  // правообладателем (депонирование на физлицо). В карточке продукта можно выбрать,
+  // кто из них указывается в конкретной заявке; по умолчанию — все.
+  const AUTHOR_FIELDS = [
+    ["fullName", "ФИО"],
+    ["birthDate", "Дата рождения"],
+    ["citizenship", "Гражданство"],
+    ["inn", "ИНН (обязателен, графа 2)"],
+    ["passport", "Паспорт: серия и номер (графа 2)"],
+    ["snils", "СНИЛС (при наличии)"],
+    ["address", "Адрес места жительства"],
+    ["contribution", "Творческий вклад (графа 7А)"],
+  ];
+  const authorsBox = el("div", {});
+
+  function authorCard(a, idx) {
+    const inputs = AUTHOR_FIELDS.map(([key, label]) => el("label", { class: "field" }, [
+      el("span", { style: "display:block;margin-bottom:4px" }, label),
+      el("input", { type: "text", "data-author": String(idx), "data-key": key, value: a[key] || "" }),
+    ]));
+    return el("div", { class: "panel", style: "margin:8px 0" }, [
+      el("div", { class: "row", style: "justify-content:space-between;align-items:center" }, [
+        el("b", {}, idx === 0 ? "Автор 1 (он же заявитель-правообладатель)" : `Автор ${idx + 1}`),
+        el("button", { class: "ghost", type: "button", onclick: (ev) => {
+          ev.target.closest(".panel").remove(); renumberAuthors();
+        } }, "Удалить"),
+      ]),
+      el("div", { class: "two-col" }, inputs),
+    ]);
+  }
+
+  // Индексы в data-author должны идти подряд после удаления — иначе порядок «поедет».
+  function renumberAuthors() {
+    [...authorsBox.children].forEach((card, i) => {
+      card.querySelectorAll("[data-author]").forEach((inp) => inp.setAttribute("data-author", String(i)));
+      const title = card.querySelector("b");
+      if (title) title.textContent = i === 0 ? "Автор 1 (он же заявитель-правообладатель)" : `Автор ${i + 1}`;
+    });
+  }
+
+  (profile.authors && profile.authors.length ? profile.authors : [{}])
+    .forEach((a, i) => authorsBox.append(authorCard(a, i)));
+
+  function collectAuthors() {
+    const byIdx = new Map();
+    authorsBox.querySelectorAll("[data-author]").forEach((inp) => {
+      const i = Number(inp.getAttribute("data-author"));
+      if (!byIdx.has(i)) byIdx.set(i, {});
+      byIdx.get(i)[inp.getAttribute("data-key")] = inp.value.trim();
+    });
+    return [...byIdx.entries()].sort((a, b) => a[0] - b[0])
+      .map(([, v]) => v).filter((a) => a.fullName);
+  }
+
   async function save() {
     const out = {};
-    app.querySelectorAll("[data-path]").forEach((inp) => {
+    // data-path — только поля организации и техподдержки; авторы собираются отдельно.
+    form.querySelectorAll("[data-path]").forEach((inp) => {
       const keys = inp.getAttribute("data-path").split(".");
       let o = out;
       for (let i = 0; i < keys.length - 1; i++) { o[keys[i]] = o[keys[i]] || {}; o = o[keys[i]]; }
       o[keys[keys.length - 1]] = inp.type === "number" ? (inp.value === "" ? null : Number(inp.value)) : inp.value;
     });
+    out.authors = collectAuthors();
     await api.put("/api/profile", { profile: out });
-    toast("Профиль сохранён");
+    toast(`Профиль сохранён · авторов: ${out.authors.length}`);
   }
 
   app.innerHTML = "";
@@ -1188,7 +1253,18 @@ async function viewProfile() {
       "<b>автоматически подставляться</b> в каждый новый продукт. В карточке продукта значения можно переопределить.<br>" +
       "<b>Автор (физлицо)</b> — на него оформляется депонирование в Роспатенте; затем право отчуждается организации-правообладателю." }),
     form,
-    el("div", { class: "row", style: "margin-top:8px" }, [el("button", { onclick: save }, "Сохранить профиль")]),
+    el("h2", { style: "margin-top:16px" }, "Авторы программы"),
+    el("div", { class: "hint", html:
+      "Графы 2, 7 и 7А заявления. Первый в списке — заявитель-правообладатель. " +
+      "Все авторы профиля <b>автоматически попадают в каждую заявку</b>; в карточке продукта " +
+      "можно оставить только нужных." }),
+    authorsBox,
+    el("div", { class: "row", style: "margin-top:8px" }, [
+      el("button", { class: "ghost", type: "button", onclick: () => {
+        authorsBox.append(authorCard({}, authorsBox.children.length));
+      } }, "Добавить автора"),
+      el("button", { onclick: save }, "Сохранить профиль"),
+    ]),
   ]));
 }
 

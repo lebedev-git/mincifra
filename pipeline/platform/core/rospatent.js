@@ -52,32 +52,98 @@ function inferYear(id) {
   return String(new Date().getFullYear());
 }
 
-// Реферат ≤ 900 символов (plain-text) из описания и назначения карточки.
-function buildReferat(p) {
-  const parts = [];
-  if (p.description) parts.push(String(p.description).trim());
-  if (p.purpose) parts.push(`Назначение: ${String(p.purpose).trim()}`);
+// Реферат по п. 30 Правил (приказ Минэкономразвития № 211).
+// Состав: название, назначение, область применения, функциональные возможности;
+// могут быть отражены тип ЭВМ и версия ОС; если есть персональные данные — указать.
+// Реферат ОБЯЗАН завершаться языком программирования и объёмом в единицах, кратных
+// числу байт, — поэтому хвост собирается первым и при нехватке лимита не режется,
+// сокращается только описательная часть. Объём реферата ≤ 900 знаков.
+function buildReferat(prod, bytes) {
+  const p = prod.product || {}, t = prod.tech || {}, reg = prod.registration || {};
   const langs = joinList(p.programmingLanguages);
-  if (langs !== "—") parts.push(`Язык программирования: ${langs}.`);
-  parts.push("Графический интерфейс — на русском языке.");
-  let text = parts.join(" ").replace(/\s+/g, " ").trim();
-  if (text.length > REFERAT_LIMIT) {
-    text = text.slice(0, REFERAT_LIMIT - 1).replace(/\s+\S*$/, "") + "…";
+
+  // Обязательное завершение (п. 30) — не обрезается.
+  const tail = [];
+  tail.push(`Язык программирования: ${langs === "—" ? "не указан" : langs}.`);
+  tail.push(`Объём программы: ${bytes == null ? "не определён" : bytes + " байт"}.`);
+  const tailText = tail.join(" ");
+
+  // Описательная часть.
+  const head = [];
+  // Точка в конце каждого блока: тексты из package.json часто без неё, иначе
+  // предложения склеиваются («…(Минцифры) Тип ЭВМ: …»).
+  const dot = (s) => { const t = String(s).trim(); return /[.!?…]$/.test(t) ? t : t + "."; };
+  if (p.name) head.push(dot(p.name));
+  if (p.description) head.push(dot(p.description));
+  if (p.purpose) head.push(dot(`Назначение и область применения: ${String(p.purpose).trim()}`));
+  const os = joinList(t.supportedOS);
+  if (os !== "—") head.push(`Операционные системы: ${os}.`);
+  if (reg.deviceType) head.push(`Тип ЭВМ: ${reg.deviceType}.`);
+  // Персональные данные — если обрабатываются, указание в реферате обязательно (п. 30).
+  const pdn = prod.personalData || {};
+  if (pdn.contains) {
+    head.push(`Содержит персональные данные${pdn.operatorRegNumber
+      ? ` (регистрационный номер в реестре операторов: ${pdn.operatorRegNumber})` : ""}.`);
   }
-  return text;
+
+  let headText = head.join(" ").replace(/\s+/g, " ").trim();
+  const room = REFERAT_LIMIT - tailText.length - 1; // −1 на пробел между частями
+  if (headText.length > room) {
+    headText = headText.slice(0, Math.max(0, room - 1)).replace(/\s+\S*$/, "") + "…";
+  }
+  return (headText ? headText + " " : "") + tailText;
 }
 
 // Секция «Заявитель / автор» (физлицо) — Схема B: депонирование оформляется на
-// физлицо, поэтому в форме Госуслуг эти поля заполняются данными автора из профиля.
-function applicantFields() {
-  const a = store.getProfile().author || {};
-  return [
-    { label: "Заявитель / автор (ФИО)", value: val(a.fullName) },
-    { label: "Дата рождения", value: val(a.birthDate) },
-    { label: "Гражданство", value: val(a.citizenship) },
-    { label: "СНИЛС", value: val(a.snils) },
-    { label: "Адрес места жительства", value: val(a.address) },
+// физлицо, поэтому и графа 2 (заявитель-правообладатель), и графа 7А (автор)
+// заполняются данными одного человека из профиля.
+// Графа 2, п. 13 Правил: идентификаторы российского физлица — ИНН и серия/номер
+// документа, удостоверяющего личность; СНИЛС — только «при наличии».
+// Графа 7А, п. 20: ФИО, дата рождения, гражданство, место жительства, творческий
+// вклад и способ упоминания при публикации.
+const MENTION_DEFAULT = "упоминать под своим именем";
+
+// Авторы продукта = привязка из карточки (registration.authors — список ФИО).
+// Если привязка не задана, берутся ВСЕ авторы профиля: одиночный автор попадает
+// в заявку сам, без ручного выбора. Имена, которых уже нет в профиле, отбрасываются.
+function resolveAuthors(prod) {
+  const all = store.getProfile().authors || [];
+  const picked = (prod.registration && prod.registration.authors) || [];
+  if (!picked.length) return all;
+  const byName = new Map(all.map((a) => [String(a.fullName).trim(), a]));
+  return picked.map((n) => byName.get(String(n).trim())).filter(Boolean);
+}
+
+function applicantFields(prod) {
+  const authors = resolveAuthors(prod);
+  // Схема B: заявитель-правообладатель — первый автор (депонирование на физлицо).
+  const a = authors[0] || {};
+  const rows = [
+    { label: "Графа 2. Заявитель (правообладатель), ФИО", value: val(a.fullName) },
+    { label: "Графа 2. Адрес места жительства", value: val(a.address), note: "с указанием страны (RU)" },
+    { label: "Графа 2. ИНН", value: val(a.inn), note: "обязателен для российского физлица" },
+    { label: "Графа 2. Документ, удостоверяющий личность", value: val(a.passport), note: "серия и номер" },
+    { label: "Графа 2. СНИЛС", value: val(a.snils), note: "при наличии" },
+    { label: "Графа 7. Всего авторов", value: String(authors.length || 0),
+      note: authors.length > 1 ? "сведения о 2-м и последующих — в дополнении к заявлению" : "" },
   ];
+
+  // Графа 7А по каждому автору: первый — в заявлении, остальные — в дополнении.
+  authors.forEach((au, i) => {
+    const g = authors.length > 1 ? `Графа 7А (автор ${i + 1}${i ? ", дополнение к заявлению" : ""}). ` : "Графа 7А. ";
+    rows.push(
+      { label: g + "ФИО", value: val(au.fullName) },
+      { label: g + "Дата рождения", value: val(au.birthDate) },
+      { label: g + "Гражданство", value: val(au.citizenship) },
+      { label: g + "Место жительства", value: val(au.address) },
+      { label: g + "Творческий вклад", value: val(au.contribution), note: "краткое описание, обязательно" },
+      { label: g + "Способ упоминания при публикации", value: au.mentionMode || MENTION_DEFAULT },
+    );
+  });
+  if (!authors.length) {
+    rows.push({ label: "Графа 7А. Автор", value: "—", note: "добавьте автора в профиль" });
+  }
+  return rows;
 }
 
 // Сборка экрана «Сведения о программе» + реферат.
@@ -86,21 +152,30 @@ function buildGosuslugi(id) {
   const p = prod.product || {}, t = prod.tech || {}, reg = prod.registration || {};
   const bytes = snapshotBytes(id);
 
+  const pub = prod.publication || {};
+  const pdn = prod.personalData || {};
+
   const fields = [
-    { label: "Название", value: val(p.name) },
-    { label: "Язык программирования", value: joinList(p.programmingLanguages) },
-    { label: "Операционная система", value: joinList(t.supportedOS), note: "при наличии" },
-    { label: "Тип ЭВМ", value: val(reg.deviceType), note: "тип устройства" },
+    { label: "Графа 1. Название программы", value: val(p.name) },
+    { label: "Графа 3. Персональные данные", value: pdn.contains ? "содержит" : "не содержит" },
+    { label: "Графа 3. Номер в реестре операторов ПДн", value: val(pdn.operatorRegNumber),
+      note: pdn.contains ? "обязателен, если ПДн обрабатываются" : "не заполняется" },
+    { label: "Графа 4. Год создания", value: val(reg.yearCreated) },
+    { label: "Графа 5. Страна обнародования", value: val(pub.country),
+      note: "только если программа уже выпущена в свет" },
+    { label: "Графа 5. Год обнародования", value: val(pub.year), note: "только если выпущена в свет" },
+    // Ниже — сведения не из заявления, а из реферата (п. 30) и экранов ЕПГУ.
+    { label: "Язык программирования", value: joinList(p.programmingLanguages), note: "для реферата" },
+    { label: "Операционная система", value: joinList(t.supportedOS), note: "для реферата, при наличии" },
+    { label: "Тип ЭВМ", value: val(reg.deviceType), note: "для реферата" },
     { label: "Объём (в байтах)", value: bytes == null ? "—" : String(bytes),
       note: bytes == null ? "загрузите снимок кода" : bytesHuman(bytes) },
     { label: "Единица информации", value: bytes == null ? "—" : "байт" },
-    { label: "Год создания", value: val(reg.yearCreated) },
-    { label: "Является компонентом ГИС", value: reg.gisComponent ? "да" : "нет" },
   ];
 
-  const applicant = applicantFields();
-  const authorFilled = applicant.some((f) => f.value !== "—");
-  const referat = buildReferat(p);
+  const applicant = applicantFields(prod);
+  const authorFilled = resolveAuthors(prod).length > 0;
+  const referat = buildReferat(prod, bytes);
   return {
     productId: id,
     productName: p.name || id,
@@ -148,7 +223,6 @@ function autofill(id) {
 
   if (!reg.deviceType) reg.deviceType = inferDeviceType(p);
   if (!reg.yearCreated) reg.yearCreated = inferYear(id);
-  if (reg.gisComponent === undefined) reg.gisComponent = false;
   if (!Array.isArray(p.programmingLanguages) || !p.programmingLanguages.length) {
     const langs = inferLanguages(id);
     if (langs.length) { prod.product = p; p.programmingLanguages = langs; }
@@ -158,4 +232,4 @@ function autofill(id) {
   return buildGosuslugi(id);
 }
 
-module.exports = { buildGosuslugi, autofill, REFERAT_LIMIT };
+module.exports = { buildGosuslugi, autofill, buildReferat, resolveAuthors, snapshotBytes, REFERAT_LIMIT };

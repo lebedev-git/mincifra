@@ -15,6 +15,10 @@
 const http = require("http");
 const https = require("https");
 const readline = require("readline");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { spawnSync } = require("child_process");
 const { URL } = require("url");
 
 // PLATFORM_URL поддерживает http и https, а также basic-auth в самом URL:
@@ -32,16 +36,21 @@ const CLIENT_NAME = (process.env.REESTR_CLIENT_NAME || "").trim().slice(0, 64) |
   (process.env.USERNAME || process.env.USER || "агент");
 
 // --- HTTP-клиент к платформе (JSON in/out) ---
-function httpJson(method, apiPath, body) {
+// body: объект → JSON; Buffer → сырое тело (загрузка ZIP/файлов), тип из opts.contentType.
+function httpJson(method, apiPath, body, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(BASE + apiPath);
     const secure = u.protocol === "https:";
     const lib = secure ? https : http;
-    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), "utf8");
+    const raw = Buffer.isBuffer(body);
+    const payload = body === undefined ? null : (raw ? body : Buffer.from(JSON.stringify(body), "utf8"));
     const headers = {
       "Accept": "application/json",
       "X-Reestr-Client": encodeURIComponent(CLIENT_NAME),
-      ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
+      ...(payload ? {
+        "Content-Type": raw ? (opts.contentType || "application/octet-stream") : "application/json",
+        "Content-Length": payload.length,
+      } : {}),
     };
     // Basic-auth из URL (https://user:pass@host) — стандартный способ защиты за nginx.
     if (u.username) {
@@ -51,6 +60,10 @@ function httpJson(method, apiPath, body) {
     const req = lib.request({
       hostname: u.hostname, port: u.port || (secure ? 443 : 80), path: u.pathname + u.search,
       method, headers,
+      // agent:false — своё соединение на запрос. С keep-alive (в Node ≥19 он по умолчанию)
+      // сокет простаивает, пока мы пакуем папку, сервер рвёт его по таймауту, и следующий
+      // запрос уходит в мёртвое соединение → ECONNRESET. Запросов мало, экономия не нужна.
+      agent: false,
     }, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
@@ -63,7 +76,7 @@ function httpJson(method, apiPath, body) {
       });
     });
     req.on("error", (e) => reject(new Error(
-      `Платформа недоступна по ${BASE_SAFE} (${e.message}). Запущен ли server.js?`)));
+      `Платформа недоступна по ${BASE_SAFE} — ${method} ${apiPath} (${e.message}). Запущен ли server.js?`)));
     if (payload) req.write(payload);
     req.end();
   });
@@ -102,6 +115,69 @@ function checklistDigest(t) {
 function isRepoUrl(s) {
   const t = String(s || "").trim();
   return /^https?:\/\//i.test(t) || /^git@/i.test(t);
+}
+
+// --- Локальный источник → ZIP -------------------------------------------
+// Обёртка работает НА МАШИНЕ ПОЛЬЗОВАТЕЛЯ, а платформа может стоять на сервере,
+// поэтому путь вида C:\... ей передавать бессмысленно (её ФС — другая). Папку
+// упаковываем здесь и отдаём архивом: /autofill принимает ZIP сырым телом.
+// Набор архиваторов тот же, что в core/localsource.js (git-репо → снимок без .git).
+const MAX_ZIP_BYTES = 300 * 1024 * 1024; // предел платформы на загружаемый ZIP
+
+function psQuote(s) { return String(s).replace(/'/g, "''"); }
+
+// Пакует каталог в ZIP. Возвращает { buffer, cleanup } — cleanup удаляет temp.
+function zipLocalDir(dir) {
+  const abs = path.resolve(String(dir || "").trim());
+  let st;
+  try { st = fs.statSync(abs); } catch (_) { throw new Error(`Папка не найдена: ${abs}`); }
+  if (!st.isDirectory()) throw new Error(`Это не папка: ${abs}`);
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "reestr-mcp-"));
+  const zip = path.join(work, "source.zip");
+  const cleanup = () => { try { fs.rmSync(work, { recursive: true, force: true }); } catch (_) {} };
+
+  // Порядок: git archive (чистый снимок трекнутых файлов) → Compress-Archive → zip → bsdtar.
+  const tries = [];
+  if (fs.existsSync(path.join(abs, ".git")))
+    tries.push(["git", ["-C", abs, "archive", "--format=zip", "-o", zip, "HEAD"], {}]);
+  if (process.platform === "win32")
+    tries.push(["powershell", ["-NoProfile", "-NonInteractive", "-Command",
+      `Compress-Archive -Path '${psQuote(abs)}\\*' -DestinationPath '${psQuote(zip)}' -Force`], {}]);
+  tries.push(["zip", ["-r", "-q", zip, "."], { cwd: abs }]);
+  tries.push(["tar", ["-a", "-c", "-f", zip, "-C", abs, "."], {}]);
+
+  for (const [cmd, args, opts] of tries) {
+    let r;
+    try { r = spawnSync(cmd, args, { ...opts, stdio: "ignore", windowsHide: true }); }
+    catch (_) { r = { status: 1 }; }
+    // Успех определяем по файлу, а не по коду возврата: PowerShell/git ведут себя по-разному.
+    if (r.status === 0 && fs.existsSync(zip) && fs.statSync(zip).size > 0) {
+      const buffer = fs.readFileSync(zip);
+      if (buffer.length > MAX_ZIP_BYTES) {
+        cleanup();
+        throw new Error(
+          `Снимок ${(buffer.length / 1048576).toFixed(0)} МБ превышает лимит платформы ` +
+          `${MAX_ZIP_BYTES / 1048576} МБ. В подачу идут ИСХОДНИКИ — вынесите крупные бинарники/медиа ` +
+          `из папки (или добавьте в .gitignore, если это git-репозиторий).`);
+      }
+      return { buffer, cleanup };
+    }
+    try { fs.rmSync(zip, { force: true }); } catch (_) {}
+  }
+  cleanup();
+  throw new Error("Не удалось собрать ZIP из папки: не найден ни git, ни PowerShell, ни zip, ни tar.");
+}
+
+// Читает локальный файл для выгрузки на платформу.
+function readLocalFile(p) {
+  const abs = path.resolve(String(p || "").trim());
+  let st;
+  try { st = fs.statSync(abs); } catch (_) { throw new Error(`Файл не найден: ${abs}`); }
+  if (!st.isFile()) throw new Error(`Это не файл: ${abs}`);
+  if (!st.size) throw new Error(`Файл пуст: ${abs}`);
+  if (st.size > MAX_ZIP_BYTES) throw new Error(`Файл больше ${MAX_ZIP_BYTES / 1048576} МБ — платформа не примет.`);
+  return { buffer: fs.readFileSync(abs), name: path.basename(abs) };
 }
 
 // --- Инструменты MCP ---
@@ -212,7 +288,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string", description: "Путь к папке проекта на этом ПК или git-URL" },
+        source: { type: "string", description: "Путь к папке проекта на ЭТОМ устройстве (упакуется и загрузится на платформу) или git-URL" },
         name: { type: "string", description: "Название программы (по умолчанию — из package.json/имени папки)" },
         productId: { type: "string", description: "id СУЩЕСТВУЮЩЕГО продукта (из list_products) — подготовить его, а не создавать новый" },
       },
@@ -242,7 +318,14 @@ const TOOLS = [
         sha256 = (pr.result && pr.result.sha256) || null;
         sizeBytes = (pr.result && pr.result.sizeBytes) || null;
       } else {
-        const af = await httpJson("POST", `/api/products/${encodeURIComponent(id)}/autofill`, { path: source });
+        // Папка с ЭТОГО устройства: пакуем локально и грузим архивом — платформа
+        // может стоять на другой машине, её ФС нашего пути не видит.
+        const packed = zipLocalDir(source);
+        let af;
+        try {
+          af = await httpJson("POST", `/api/products/${encodeURIComponent(id)}/autofill`,
+            packed.buffer, { contentType: "application/zip" });
+        } finally { packed.cleanup(); }
         sha256 = (af.result && af.result.sha256) || null;
         sizeBytes = (af.result && af.result.sizeBytes) || null;
         // Применить черновик полей карточки (autofill только предлагает patch, не сохраняет).
@@ -263,6 +346,8 @@ const TOOLS = [
         for (const d of (pdf.documents || [])) {
           documents.push({
             kind: d.kind, title: d.title, file: d.name, bytes: d.bytes,
+            // Для графы 9 заявления: «на ___ л. в ___ экз.».
+            pages: d.pages, copies: d.copies,
             downloadUrl: `/api/products/${encodeURIComponent(id)}/artifacts/file/${encodeURIComponent(d.name)}`,
           });
         }
@@ -296,6 +381,32 @@ const TOOLS = [
         missing,
         hint: "Скопируй gosuslugi.fields в форму «Сведения о программе» на Госуслугах/ФИПС; приложи два PDF из documents (Реферат + Фрагмент кода). Свидетельство придёт из Роспатента отдельно.",
       };
+    },
+  },
+  {
+    name: "upload_material",
+    description:
+      "Приложить к продукту файл с ЭТОГО устройства (свидетельство Роспатента, доп. материалы, SBOM, HAR). " +
+      "kind: rights — правовые документы и свидетельство; dep_<что-то> (напр. dep_extra) — материалы подачи; " +
+      "sbom / har — для технических проверок. Возвращает список артефактов продукта.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "id продукта (из list_products)" },
+        path: { type: "string", description: "Путь к файлу на этом устройстве" },
+        kind: { type: "string", description: "rights | dep_<категория> | sbom | har (по умолчанию rights)" },
+        name: { type: "string", description: "Имя файла на платформе (по умолчанию — исходное)" },
+      },
+      required: ["id", "path"], additionalProperties: false,
+    },
+    run: async (a) => {
+      const kind = String(a.kind || "rights").trim();
+      const file = readLocalFile(a.path);
+      const name = String(a.name || file.name).trim();
+      return await httpJson(
+        "PUT",
+        `/api/products/${encodeURIComponent(a.id)}/artifacts/${encodeURIComponent(kind)}?name=${encodeURIComponent(name)}`,
+        file.buffer, { contentType: "application/octet-stream" });
     },
   },
 ];
@@ -340,15 +451,20 @@ async function handle(msg) {
   }
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  const s = line.trim();
-  if (!s) return;
-  let msg;
-  try { msg = JSON.parse(s); } catch (_) { return; } // мусор игнорируем
-  handle(msg);
-});
-// Сигнал платформе «клиент подключился» — дашборд показывает имя и время.
-// Ошибку глотаем: платформа может быть ещё не поднята, это не повод падать.
-httpJson("POST", "/api/hello", { name: CLIENT_NAME, client: "mcp" }).catch(() => {});
-process.stderr.write(`[reestr-mcp] запущен (${CLIENT_NAME}), платформа: ${BASE_SAFE}\n`);
+// Запуск только как самостоятельный процесс — при require (selftest) stdio не трогаем.
+if (require.main === module) {
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    const s = line.trim();
+    if (!s) return;
+    let msg;
+    try { msg = JSON.parse(s); } catch (_) { return; } // мусор игнорируем
+    handle(msg);
+  });
+  // Сигнал платформе «клиент подключился» — дашборд показывает имя и время.
+  // Ошибку глотаем: платформа может быть ещё не поднята, это не повод падать.
+  httpJson("POST", "/api/hello", { name: CLIENT_NAME, client: "mcp" }).catch(() => {});
+  process.stderr.write(`[reestr-mcp] запущен (${CLIENT_NAME}), платформа: ${BASE_SAFE}\n`);
+}
+
+module.exports = { zipLocalDir, readLocalFile, TOOLS };

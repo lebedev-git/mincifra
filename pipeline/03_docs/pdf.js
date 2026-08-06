@@ -5,7 +5,7 @@
 // PDF одинаков локально и на сервере, без завязки на системные шрифты.
 //
 // Зависимость pdfkit — опциональная (как docx): ищется лениво, понятная ошибка если нет.
-// buildReferatPdf / buildCodeFragmentPdf возвращают Buffer.
+// buildReferatPdf / buildCodeFragmentPdf возвращают { buffer, pages }.
 
 const fs = require("fs");
 const path = require("path");
@@ -24,12 +24,13 @@ function requirePdfkit() {
 
 function asList(v) { return Array.isArray(v) ? v : (v == null || v === "" ? [] : [v]); }
 
-// Собирает поток PDFKit в Buffer.
-function toBuffer(doc) {
+// Собирает поток PDFKit в { buffer, pages }. Число страниц нужно для графы 9
+// заявления («на ___ л.»), поэтому считаем его до закрытия документа.
+function toBuffer(doc, pages) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     doc.on("data", (c) => chunks.push(c));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("end", () => resolve({ buffer: Buffer.concat(chunks), pages }));
     doc.on("error", reject);
     doc.end();
   });
@@ -45,6 +46,7 @@ function newDoc(PDFDocument) {
 }
 
 // Нумерация страниц снизу по центру (как «footer» в docx).
+// Возвращает число страниц: после flushPages() буфер обнуляется и посчитать уже нельзя.
 function addPageNumbers(doc) {
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i++) {
@@ -57,13 +59,16 @@ function addPageNumbers(doc) {
     doc.page.margins.bottom = oldBottom;
   }
   doc.flushPages();
+  return range.count;
 }
 
 // ---------- Реферат программы для ЭВМ ----------
-async function buildReferatPdf(product) {
+// Текст реферата НЕ собирается здесь: он приходит готовым из core/rospatent.js
+// (п. 30 Правил, лимит 900 знаков) — один источник и для формы, и для PDF.
+// Печать через 1,5 интервала — требование п. 30.
+async function buildReferatPdf(product, referatText) {
   const PDFDocument = requirePdfkit();
-  const p = (product && product.product) || {}, t = (product && product.tech) || {};
-  const langs = asList(p.programmingLanguages);
+  const p = (product && product.product) || {};
   const doc = newDoc(PDFDocument);
 
   doc.font("serif-bold").fontSize(16).text("РЕФЕРАТ", { align: "center" });
@@ -71,33 +76,58 @@ async function buildReferatPdf(product) {
   doc.font("serif-bold").fontSize(13).text(p.name || "____", { align: "center" });
   doc.moveDown(1);
 
-  const label = (t1, v) => {
-    doc.font("serif-bold").fontSize(12).text(t1, { continued: true });
-    doc.font("serif").text(v);
-  };
-  doc.font("serif").fontSize(12).text(p.description || "— описание функциональных характеристик —", { align: "justify" });
-  doc.moveDown(0.6);
-  label("Назначение: ", p.purpose || "— область применения —");
-  doc.moveDown(0.3);
-  label("Язык программирования: ", (langs.length ? langs.join(", ") : "— указать —") + ".");
-  doc.moveDown(0.3);
-  label("Операционные системы: ", (asList(t.supportedOS).join(", ") || "— указать —") + ".");
-  doc.moveDown(0.3);
-  label("Графический интерфейс: ", "на русском языке.");
+  const text = String(referatText || "").trim() || "— реферат не сформирован: заполните карточку продукта —";
+  // lineGap ≈ половина кегля даёт межстрочный интервал 1,5.
+  doc.font("serif").fontSize(12).text(text, { align: "justify", lineGap: 6 });
 
-  addPageNumbers(doc);
-  return toBuffer(doc);
+  return toBuffer(doc, addPageNumbers(doc));
 }
 
-// ---------- Фрагмент исходного кода (≤ 50 страниц) ----------
+// ---------- Титульный лист депонируемых материалов (п. 29 Правил) ----------
+// Обязателен: название программы, правообладатель и все авторы (если не отказались
+// быть упомянутыми). Печатается первой страницей файла с фрагментом кода.
+function drawTitlePage(doc, { name, rightholder, authors }) {
+  doc.font("serif-bold").fontSize(14).text("ДЕПОНИРУЕМЫЕ МАТЕРИАЛЫ,", { align: "center" });
+  doc.font("serif-bold").fontSize(14).text("ИДЕНТИФИЦИРУЮЩИЕ ПРОГРАММУ ДЛЯ ЭВМ", { align: "center" });
+  doc.moveDown(2);
+
+  doc.font("serif").fontSize(12).text("Название программы для ЭВМ:", { align: "center" });
+  doc.moveDown(0.4);
+  doc.font("serif-bold").fontSize(14).text(name || "____", { align: "center" });
+  doc.moveDown(2.5);
+
+  doc.font("serif").fontSize(12).text("Правообладатель:", { align: "center" });
+  doc.moveDown(0.3);
+  doc.font("serif-bold").fontSize(12).text(rightholder || "____", { align: "center" });
+  doc.moveDown(1.5);
+
+  const list = asList(authors).filter(Boolean);
+  doc.font("serif").fontSize(12).text(list.length > 1 ? "Авторы:" : "Автор:", { align: "center" });
+  doc.moveDown(0.3);
+  doc.font("serif-bold").fontSize(12).text(list.length ? list.join("; ") : "____", { align: "center" });
+
+  doc.addPage();
+}
+
+// ---------- Фрагмент исходного кода ----------
+// П. 27 Правил: материалы представляются «в объёме, достаточном для идентификации»;
+// прежнее ограничение в 70 страниц отменено. MAX_PAGES — наш рабочий предел по
+// рекомендации ФИПС для электронной подачи, а не норма права.
 const LINES_PER_PAGE = 50;
 const MAX_PAGES = 50;
 const HALF_PAGES = 25;
 
-async function buildCodeFragmentPdf(product, listing) {
+async function buildCodeFragmentPdf(product, listing, titleInfo) {
   const PDFDocument = requirePdfkit();
   const p = (product && product.product) || {};
   const doc = newDoc(PDFDocument);
+
+  // Титульный лист депонируемых материалов (п. 29) — обязательная первая страница.
+  drawTitlePage(doc, {
+    name: p.name,
+    rightholder: (titleInfo && titleInfo.rightholder) || "",
+    authors: (titleInfo && titleInfo.authors) || [],
+  });
 
   doc.font("serif-bold").fontSize(16).text("ФРАГМЕНТ ИСХОДНОГО КОДА", { align: "center" });
   doc.moveDown(0.3);
@@ -108,8 +138,7 @@ async function buildCodeFragmentPdf(product, listing) {
   if (!raw.trim()) {
     doc.font("serif").fontSize(12).text(
       "Листинг исходного кода не найден. Сначала выполните подготовку — платформа соберёт снимок кода и листинг.");
-    addPageNumbers(doc);
-    return toBuffer(doc);
+    return toBuffer(doc, addPageNumbers(doc));
   }
 
   const allLines = raw.replace(/\t/g, "    ").split(/\r?\n/);
@@ -122,7 +151,7 @@ async function buildCodeFragmentPdf(product, listing) {
   } else {
     const head = allLines.slice(0, HALF_PAGES * LINES_PER_PAGE);
     const tail = allLines.slice(allLines.length - HALF_PAGES * LINES_PER_PAGE);
-    lines = [...head, "", "/* … середина листинга опущена (правило ≤ 50 страниц Роспатента) … */", "", ...tail];
+    lines = [...head, "", `/* … середина листинга опущена (объём ограничен ${MAX_PAGES} страницами) … */`, "", ...tail];
     doc.font("serif").fontSize(10).fillColor("#444")
       .text(`Исходный листинг — ~${totalPages} стр. Включены первые ${HALF_PAGES} и последние ${HALF_PAGES} страниц (итого ≤ ${MAX_PAGES}).`);
   }
@@ -131,8 +160,7 @@ async function buildCodeFragmentPdf(product, listing) {
   // Построчно, без переносов — как листинг. lineGap плотный.
   doc.text(lines.join("\n"), { lineGap: 1, width: doc.page.width - 136 });
 
-  addPageNumbers(doc);
-  return toBuffer(doc);
+  return toBuffer(doc, addPageNumbers(doc));
 }
 
 // Проверка доступности (для диагностики): есть pdfkit и шрифты.

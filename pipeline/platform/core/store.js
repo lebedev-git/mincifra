@@ -129,7 +129,14 @@ function httpError(status, message) { const e = new Error(message); e.status = s
 // --- Профиль правообладателя (единый на всю установку) ---
 function getProfile() {
   const row = db().prepare("SELECT data FROM profile WHERE id = 1").get();
-  return row ? JSON.parse(row.data) : {};
+  const prof = row ? JSON.parse(row.data) : {};
+  // Авторов может быть несколько (графа 7 заявления). Прежний единственный
+  // author.* остаётся первым в списке — старые профили читаются без миграции.
+  if (!Array.isArray(prof.authors)) {
+    prof.authors = (prof.author && prof.author.fullName) ? [prof.author] : [];
+  }
+  prof.author = prof.authors[0] || {};
+  return prof;
 }
 function saveProfile(profile) {
   db().prepare(
