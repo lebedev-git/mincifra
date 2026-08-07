@@ -365,6 +365,7 @@ const TOOLS = [
       //    (Times New Roman), только они грузятся в заявку. Строятся из свежего листинга
       //    (он ещё существует после шага 2); эндпоинт сам фиксирует язык и удаляет сырьё.
       const documents = [];
+      const blockers = []; // чего не хватает, чтобы документы вообще собирались
       try {
         const pdf = await httpJson("POST", `/api/products/${encodeURIComponent(id)}/rospatent/pdf`);
         for (const d of (pdf.documents || [])) {
@@ -378,7 +379,10 @@ const TOOLS = [
           });
         }
       } catch (e) {
-        documents.push({ error: e.message });
+        // 409 — не сбой, а «нет обязательных данных» (например, не заполнены авторы).
+        // Такой случай уходит в missing отдельным пунктом, а не притворяется документом.
+        if (/HTTP 409/.test(e.message)) blockers.push(e.message.replace(/^HTTP 409[^:]*:\s*/, ""));
+        else documents.push({ error: e.message });
       }
 
       // 4) Лист полей формы Госуслуг / ФИПС + реферат. Сначала автозаполнение
@@ -387,13 +391,18 @@ const TOOLS = [
         .catch(async () => await httpJson("GET", `/api/products/${encodeURIComponent(id)}/rospatent`))).rospatent || {};
 
       // 5) Мягкая диагностика: чего не хватает для чистовой подачи.
-      const missing = [];
+      const missing = [...blockers];
       if (!sha256) missing.push("Снимок версии кода не создан — проверь путь/доступность источника.");
-      if (!ros.authorFilled) missing.push("Профиль автора-физлица пуст (ФИО, СНИЛС, адрес) — заполни в «Профиль», иначе заявление ДоЭВМ с прочерками.");
+      if (!ros.authorFilled && !blockers.length) {
+        missing.push("Авторы не заполнены — открой «Профиль» → «Авторы программы» и внеси ФИО, дату рождения, гражданство, ИНН, паспорт, адрес и творческий вклад.");
+      }
       documents.filter((d) => d.error).forEach((d) => missing.push(`PDF не собран: ${d.error}`));
 
       return {
         productId: id,
+        // ready — можно ли идти на Госуслуги: комплект собран и обязательные данные есть.
+        ready: missing.length === 0,
+        profileUrl: `${BASE_SAFE}/#/profile`,
         sha256,
         sizeBytes,
         gosuslugi: {

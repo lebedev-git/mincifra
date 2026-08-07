@@ -970,6 +970,48 @@ async function viewDocs(id, forcePrep) {
     el("textarea", { readonly: "readonly",
       style: "width:100%;min-height:130px;font-family:Consolas,monospace;font-size:12px" }, G.referat),
   ]);
+  // --- Статус заявителя и авторов ---
+  // Без авторов реферат и титульный лист собрать нельзя (п. 29 Правил), поэтому
+  // состояние показывается ДО полей формы, с прямым переходом в профиль.
+  const gAuthors = (G.applicant || []).filter((f) => /Графа 7А/.test(f.label) && /ФИО$/.test(f.label))
+    .map((f) => f.value).filter((v) => v && v !== "—");
+  const gApplicantName = (G.applicant || []).find((f) => /Графа 2\..*ФИО/.test(f.label));
+  const gIncomplete = (G.applicant || [])
+    .filter((f) => f.value === "—" && !/СНИЛС|операторов/.test(f.label))
+    .map((f) => f.label.replace(/^Графа [^.]+\.\s*/, ""));
+  const profileBtn = el("button", { onclick: () => { location.hash = "#/profile"; } },
+    gAuthors.length ? "Открыть профиль" : "Заполнить профиль");
+
+  const statusPanel = el("div", { class: "panel" }, [
+    el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
+      el("h2", { style: "flex:1;margin:0" }, "Заявитель и авторы"),
+      profileBtn,
+    ]),
+    gAuthors.length
+      ? el("div", {}, [
+          el("div", {}, [
+            el("b", {}, "Заявитель (правообладатель): "),
+            (gApplicantName && gApplicantName.value) || "—",
+          ]),
+          el("div", { style: "margin-top:4px" }, [
+            el("b", {}, gAuthors.length > 1 ? "Авторы: " : "Автор: "),
+            gAuthors.join("; "),
+          ]),
+          gIncomplete.length
+            ? el("div", { class: "hint", style: "margin-top:8px" },
+                "Не хватает: " + gIncomplete.join(", ") + ". Документы соберутся, но в заявлении будут прочерки.")
+            : el("div", { class: "muted", style: "margin-top:6px" },
+                "Данные заполнены — комплект готовится полностью."),
+        ])
+      : el("div", { class: "hint", style: "border-left-color:var(--fail);background:#fdecea" }, [
+          el("b", {}, "Нет данных об авторах. "),
+          "Реферат и титульный лист депонируемых материалов обязаны содержать правообладателя и всех " +
+          "авторов (п. 29 Правил), поэтому документы для заявки не формируются. Заполните раздел " +
+          "«Авторы программы» в профиле: ФИО, дата рождения, гражданство, ИНН, паспорт, адрес, " +
+          "творческий вклад — затем вернитесь и повторите подготовку.",
+        ]),
+  ]);
+
   const gosuslugiPanel = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
       el("h2", { style: "flex:1;margin:0" }, "Госуслуги: госрегистрация ПрЭВМ"),
@@ -1016,7 +1058,7 @@ async function viewDocs(id, forcePrep) {
     el("table", {}, [el("tr", {}, [el("th", {}, "Документ"), el("th", {}, "Файл"), el("th", {}, "")]), ...dlRows]),
   ]);
 
-  renderShell(id, "depon", tracker, name, "Роспатент", [gosuslugiPanel, filesPanel]);
+  renderShell(id, "depon", tracker, name, "Роспатент", [statusPanel, gosuslugiPanel, filesPanel]);
 }
 
 // ---------- отправка (монтажный лист подачи) ----------

@@ -26,9 +26,24 @@ function saveReplacing(id, kind, name, buffer) {
 
 // Генерирует оба PDF. Требует, чтобы листинг (LISTING_ARTIFACT) ещё существовал —
 // поэтому вызывается до depon-фрагмента, который листинг удаляет.
+// Документы подаются в Роспатент, поэтому в имени файла — название программы из
+// заявления, а не техническое имя пакета из package.json (было «react-example»).
+function documentSlug(product) {
+  const p = (product && product.product) || {};
+  const base = safeName(p.name) || safeName(p.shortName) || "Программа для ЭВМ";
+  return base.length > 60 ? base.slice(0, 60).trim() : base;
+}
+
+// Без авторов документы не собираются: реферат и титульный лист депонируемых
+// материалов обязаны содержать правообладателя и всех авторов (п. 29 Правил),
+// иначе на руках оказывается комплект с прочерками, который выглядит готовым.
+class MissingDataError extends Error {
+  constructor(message) { super(message); this.status = 409; }
+}
+
 async function generate(id) {
   const product = store.getProduct(id);
-  const short = safeName(product.product && product.product.shortName);
+  const short = documentSlug(product);
 
   const lp = store.artifactPath(id, LISTING_ARTIFACT);
   const listing = fs.existsSync(lp) ? fs.readFileSync(lp, "utf8") : "";
@@ -38,6 +53,13 @@ async function generate(id) {
   const rospatent = require("./rospatent");
   const referatText = rospatent.buildReferat(product, rospatent.snapshotBytes(id));
   const authors = rospatent.resolveAuthors(product);
+  if (!authors.length) {
+    throw new MissingDataError(
+      "Не заполнены авторы. Реферат и титульный лист депонируемых материалов обязаны " +
+      "содержать правообладателя и всех авторов (п. 29 Правил), поэтому документы не собраны. " +
+      "Заполните раздел «Авторы программы» в профиле: ФИО, дата рождения, гражданство, ИНН, " +
+      "паспорт, адрес и творческий вклад — затем повторите подготовку.");
+  }
   // Схема B: правообладатель — первый автор (депонирование оформляется на физлицо).
   const titleInfo = {
     rightholder: (authors[0] && authors[0].fullName)
@@ -45,7 +67,7 @@ async function generate(id) {
     authors: authors.map((a) => a.fullName).filter(Boolean),
   };
 
-  const referat = await pdf.buildReferatPdf(product, referatText);
+  const referat = await pdf.buildReferatPdf(product, referatText, titleInfo);
   const referatName = `dep_referat_Реферат_${short}.pdf`;
   saveReplacing(id, "dep_referat", referatName, referat.buffer);
 

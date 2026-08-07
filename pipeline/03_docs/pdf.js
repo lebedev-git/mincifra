@@ -66,15 +66,26 @@ function addPageNumbers(doc) {
 // Текст реферата НЕ собирается здесь: он приходит готовым из core/rospatent.js
 // (п. 30 Правил, лимит 900 знаков) — один источник и для формы, и для PDF.
 // Печать через 1,5 интервала — требование п. 30.
-async function buildReferatPdf(product, referatText) {
+async function buildReferatPdf(product, referatText, titleInfo) {
   const PDFDocument = requirePdfkit();
   const p = (product && product.product) || {};
   const doc = newDoc(PDFDocument);
 
   doc.font("serif-bold").fontSize(16).text("РЕФЕРАТ", { align: "center" });
-  doc.moveDown(0.3);
-  doc.font("serif-bold").fontSize(13).text(p.name || "____", { align: "center" });
   doc.moveDown(1);
+
+  // Шапка реферата в принятом ФИПС виде: правообладатель, авторы, название.
+  // Сам текст реферата (аннотация + обязательный хвост п. 30) идёт ниже.
+  const line = (label, value) => {
+    doc.font("serif-bold").fontSize(12).text(label, { continued: true });
+    doc.font("serif").text(value || "____");
+    doc.moveDown(0.25);
+  };
+  const authors = asList(titleInfo && titleInfo.authors).filter(Boolean);
+  line("Правообладатель: ", (titleInfo && titleInfo.rightholder) || "");
+  line(authors.length > 1 ? "Авторы: " : "Автор: ", authors.join("; "));
+  line("Название программы для ЭВМ: ", p.name || "");
+  doc.moveDown(0.8);
 
   const text = String(referatText || "").trim() || "— реферат не сформирован: заполните карточку продукта —";
   // lineGap ≈ половина кегля даёт межстрочный интервал 1,5.
