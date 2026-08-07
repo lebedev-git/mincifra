@@ -90,8 +90,10 @@ async function extractZip(zipPath, destDir) {
       `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`]);
     if (r.code === 0 && ok()) return destDir;
   }
-  // 2) unzip (Linux)
-  if (await hasTool("unzip")) {
+  // 2) unzip (Linux) — пробуем НАПРЯМУЮ, без hasTool: у unzip нет «--version»
+  //    (он возвращает код 10 на неизвестный флаг), и проверка ложно решала бы,
+  //    что утилиты нет. Тогда на сервере терялись листинг, язык и фрагмент кода.
+  {
     const r = await run("unzip", ["-q", "-o", zipPath, "-d", destDir]);
     if (r.code === 0 && ok()) return destDir;
   }
