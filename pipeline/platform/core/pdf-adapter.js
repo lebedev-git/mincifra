@@ -95,6 +95,17 @@ async function generate(id) {
   try { require("./rospatent").autofill(id); } catch (_) { /* не критично */ }
   if (fs.existsSync(lp)) { try { fs.unlinkSync(lp); } catch (_) { /* temp */ } }
 
+  // Отпечаток комплекта: для каких авторов и какого названия собраны документы.
+  // По нему интерфейс отличает актуальные файлы от устаревших (авторов изменили
+  // после генерации — в PDF остались прежние, подавать такие нельзя).
+  const fresh = store.getProduct(id);
+  fresh.registration = fresh.registration || {};
+  fresh.registration.documentsBuiltFor = {
+    authors: titleInfo.authors,
+    productName: (fresh.product && fresh.product.name) || "",
+  };
+  store.saveProduct(id, fresh);
+
   // pages — для графы 9 заявления («на ___ л.»). Реферат подаётся в 2 экземплярах.
   return { documents };
 }

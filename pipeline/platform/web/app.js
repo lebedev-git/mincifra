@@ -1034,6 +1034,25 @@ async function viewDocs(id, forcePrep) {
   // В заявку на Госуслугах идут только идентифицирующие материалы (ст. 1262 ГК):
   // реферат + фрагмент кода. Снимок/акт — доказательство версии, хранится у себя.
   const UPLOAD_KINDS = new Set(["dep_referat", "dep_codefrag"]);
+  // Документ пригоден к подаче, только если собран для ТЕКУЩЕГО состава авторов:
+  // реферат и титульный лист содержат их поимённо (п. 29 Правил). Если авторов нет
+  // или их изменили после генерации — файл устарел, подавать его нельзя.
+  const builtFor = ((product.registration || {}).documentsBuiltFor) || null;
+  const sameAuthors = builtFor && Array.isArray(builtFor.authors)
+    && builtFor.authors.join("|") === gAuthors.join("|");
+  const docState = !gAuthors.length ? "no-data" : (sameAuthors ? "ok" : "stale");
+  const stateCell = () => {
+    if (docState === "ok") {
+      return el("span", { class: "tag", style: "color:var(--pass);border-color:currentColor;font-weight:600" }, "→ в заявку");
+    }
+    if (docState === "no-data") {
+      return el("a", { href: "#/profile", class: "tag",
+        style: "color:var(--fail);border-color:currentColor;font-weight:600;text-decoration:none",
+        title: "Реферат и титульный лист обязаны содержать авторов — заполните профиль" }, "⚠ нет данных");
+    }
+    return el("span", { class: "tag", style: "color:var(--warn);border-color:currentColor;font-weight:600",
+      title: "Состав авторов изменился после сборки — пересоберите документы" }, "⚠ устарел");
+  };
   const dlRows = artifacts
     .filter((a) => !isDeponRaw(a.name) && /^dep_(snapshot|referat|codefrag|statement|cert)_/i.test(a.name))
     .map((a) => {
@@ -1043,18 +1062,39 @@ async function viewDocs(id, forcePrep) {
     .sort((x, y) => Number(y.forUpload) - Number(x.forUpload))
     .map(({ a, key, forUpload }) => el("tr", {}, [
       el("td", { style: "width:1%;white-space:nowrap" },
-        forUpload
-          ? el("span", { class: "tag", style: "color:var(--ok, #2e7d32);border-color:currentColor;font-weight:600" }, "→ в заявку")
-          : el("span", { class: "muted" }, "для себя")),
+        forUpload ? stateCell() : el("span", { class: "muted" }, "для себя")),
       el("td", {}, FILE_LABELS[key] || key),
       el("td", {}, el("a", { href: `/api/products/${id}/artifacts/file/${encodeURIComponent(a.name)}` },
         "⬇ " + a.name.slice(key.length + 1))),
       el("td", { class: "muted", style: "width:1%;white-space:nowrap" }, `${Math.round((a.size || 0) / 1024)} КБ`),
     ]));
+  // Пересборка реферата и фрагмента кода из уже загруженного снимка — после того,
+  // как пользователь заполнил авторов или поменял их состав.
+  const rebuildBtn = el("button", { onclick: async (ev) => {
+    const b = ev.target, t0 = b.textContent;
+    b.disabled = true; b.textContent = "Собираю…";
+    try {
+      await api.post(`/api/products/${id}/rospatent/pdf`);
+      toast("Документы пересобраны");
+      viewDocs(id);
+    } catch (e) {
+      toast(e.message || "Не удалось пересобрать", true);
+      b.disabled = false; b.textContent = t0;
+    }
+  } }, "Пересобрать документы");
+
   const filesPanel = el("div", { class: "panel" }, [
     el("div", { class: "row", style: "align-items:center;margin-bottom:8px" }, [
       el("h2", { style: "flex:1;margin:0" }, "Скачай и приложи к заявке"),
+      docState === "ok" ? null : rebuildBtn,
     ]),
+    docState === "no-data"
+      ? el("div", { class: "hint", style: "border-left-color:var(--fail);background:#fdecea" },
+          "Документы собраны без сведений об авторах — подавать их нельзя. Заполните профиль, затем нажмите «Пересобрать документы».")
+      : docState === "stale"
+        ? el("div", { class: "hint" },
+            "Состав авторов изменился после сборки: в файлах указаны прежние. Нажмите «Пересобрать документы».")
+        : null,
     el("table", {}, [el("tr", {}, [el("th", {}, "Документ"), el("th", {}, "Файл"), el("th", {}, "")]), ...dlRows]),
   ]);
 
