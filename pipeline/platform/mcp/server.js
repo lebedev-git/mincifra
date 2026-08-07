@@ -227,7 +227,14 @@ const TOOLS = [
   },
   {
     name: "patch_product",
-    description: "Заполнить/обновить поля карточки. changes — частичный объект по структуре product (напр. {\"rightholder\":{\"inn\":\"7701...\"},\"finance\":{\"annualRevenueProduct\":5000000}}). Сливается с текущей карточкой (не затирает остальное); массивы заменяются целиком. Возвращает обновлённый чек-лист.",
+    description:
+      "Заполнить/обновить поля карточки. changes — частичный объект по структуре product, сливается с текущей " +
+      "(массивы заменяются целиком). Для подачи в Роспатент важны: product.description (функциональные возможности) " +
+      "и product.purpose (назначение и область применения) — из них строится реферат; " +
+      "publication.country / publication.year — страна и год обнародования (графа 5, только если программа выпущена в свет); " +
+      "personalData.contains (true/false) и personalData.operatorRegNumber — графа 3 и указание в реферате; " +
+      "registration.authors — массив ФИО из профиля, если в ЭТУ заявку идут не все авторы (пусто = все). " +
+      "Пример: {\"product\":{\"purpose\":\"Учёт заявок\"},\"personalData\":{\"contains\":false}}.",
     inputSchema: {
       type: "object",
       properties: {
@@ -269,9 +276,15 @@ const TOOLS = [
   {
     name: "set_profile",
     description:
-      "Заполнить/обновить профиль. profile — частичный объект; сервер принимает ТОЛЬКО поля белого списка " +
-      "(author.fullName/birthDate/citizenship/snils/address, rightholder.orgName/inn/ogrn/address/ruControlSharePercent/signatory.name/signatory.position, " +
-      "support.contactFio/contactEmail/contactPhone) — всё прочее отбрасывается. Незатронутые поля сохраняются.",
+      "Заполнить/обновить профиль. profile — частичный объект, незатронутые поля сохраняются. " +
+      "АВТОРЫ: profile.authors — МАССИВ объектов, поля каждого: fullName, birthDate, citizenship, " +
+      "inn (обязателен для российского физлица, графа 2), passport (серия и номер, графа 2), " +
+      "snils (при наличии), address (с указанием страны, напр. «Россия (RU), г. Москва, …»), " +
+      "contribution (краткое описание творческого вклада, графа 7А — обязательно), mentionMode " +
+      "(«упоминать под своим именем» по умолчанию). Первый автор считается заявителем-правообладателем. " +
+      "Массив заменяется целиком — передавай ВСЕХ авторов сразу. " +
+      "Прочее: rightholder.orgName/inn/ogrn/address/ruControlSharePercent/signatory.name/signatory.position, " +
+      "support.contactFio/contactEmail/contactPhone. Поля вне этого списка отбрасываются.",
     inputSchema: {
       type: "object",
       properties: { profile: { type: "object", description: "Частичный профиль: только меняемые поля" } },
@@ -287,11 +300,15 @@ const TOOLS = [
     name: "prepare_rospatent",
     description:
       "ОДИН вызов: загрузить проект → получить всё для подачи программы для ЭВМ в Роспатент через Госуслуги/ФИПС (на физлицо). " +
-      "source = путь к папке проекта на этом ПК ИЛИ git-URL (как scan_project). " +
+      "source = ПУТЬ К ПАПКЕ проекта на устройстве пользователя (обёртка сама пакует её в ZIP и грузит на платформу — " +
+      "локальный путь работать будет, даже если платформа стоит на сервере) ИЛИ git-URL. " +
       "productId (необязательно) = подготовить СУЩЕСТВУЮЩИЙ продукт из list_products; без него создаётся новый. " +
-      "Делает снимок версии кода, фрагмент кода (50 стр.), генерит два PDF (Реферат + Фрагмент кода, Times New Roman) " +
-      "и возвращает готовый лист полей формы «Сведения о программе» + реферат ≤900 симв. " +
-      "Свидетельство и цепочку прав НЕ трогает — это чистый роспатентный трек для физлица.",
+      "Делает снимок версии кода + SHA-256, фрагмент исходного кода, генерит два PDF (Реферат по п.30 Правил и " +
+      "Фрагмент кода с титульным листом по п.29) и возвращает лист полей заявления по графам + реферат ≤900 знаков. " +
+      "В ответе: gosuslugi.fields (графы 1,3,4,5 + данные для реферата), gosuslugi.applicant (графы 2,7,7А по каждому автору), " +
+      "documents с готовыми ССЫЛКАМИ downloadUrl и числом листов/экземпляров для графы 9, massive missing — чего не хватает. " +
+      "ВАЖНО: чтобы реферат был содержательным, у продукта должны быть заполнены product.description и product.purpose " +
+      "(patch_product), а в профиле — авторы (set_profile). Свидетельство и цепочку прав НЕ трогает.",
     inputSchema: {
       type: "object",
       properties: {
@@ -355,7 +372,9 @@ const TOOLS = [
             kind: d.kind, title: d.title, file: d.name, bytes: d.bytes,
             // Для графы 9 заявления: «на ___ л. в ___ экз.».
             pages: d.pages, copies: d.copies,
-            downloadUrl: `/api/products/${encodeURIComponent(id)}/artifacts/file/${encodeURIComponent(d.name)}`,
+            // Абсолютная ссылка (BASE_SAFE — без логина/пароля): клиент может работать
+            // с другого устройства, относительный путь там никуда не ведёт.
+            downloadUrl: `${BASE_SAFE}/api/products/${encodeURIComponent(id)}/artifacts/file/${encodeURIComponent(d.name)}`,
           });
         }
       } catch (e) {
