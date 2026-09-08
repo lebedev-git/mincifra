@@ -49,7 +49,7 @@ const good = {
     productPageUrl: "https://example.ru/p", pricingUrl: "https://example.ru/price",
     expertDemo: { url: "https://demo.example.ru" },
   },
-  rightholder: { orgName: "ООО Тест", inn: "7701234567", ruControlSharePercent: 100, stateControlled: false },
+  rightholder: { holderType: "org", orgName: "ООО Тест", inn: "7701234567", ruControlSharePercent: 100, stateControlled: false },
   rights: { basis: "rospatent" },
   finance: { annualRevenueProduct: 1000000, annualForeignPayments: 0 },
   tech: { cicdLocation: "RU", licenseKeysLocation: "RU" },
@@ -66,7 +66,22 @@ assert.deepStrictEqual(stillOpen.map((r) => r.norm), [],
   "остались незакрытые требования: " + stillOpen.map((r) => r.norm).join(", "));
 assert.strictEqual(ok.canDeclareCompliance, true, "заполненная карточка должна позволять декларацию");
 
-// 6. Неприменимые пункты помечаются, а не считаются проваленными.
+// 6. Правообладателем может быть гражданин РФ — это шестой абзац подп. «а».
+// Отчуждение права в ООО для реестра не обязательно; устав тогда не требуется.
+const citizen = evaluate(
+  { ...good, rightholder: { holderType: "citizen", citizenFullName: "Иванов Иван Иванович", inn: "770112345678", citizenship: "RU" } },
+  report, [], "2026-09-08");
+assert.strictEqual(citizen.requirements.find((r) => r.norm.includes("«а»")).status, "ok",
+  "гражданин РФ должен проходить подп. «а» пункта 5");
+assert.strictEqual(citizen.attachments.find((a) => a.norm.includes("«в»")).status, "n/a",
+  "устав не требуется, если правообладатель — гражданин РФ");
+// Без указания типа правообладателя пункт не закрывается — молча «сойдёт» быть не должно.
+const noType = evaluate({ ...good, rightholder: { orgName: "ООО Тест", inn: "7701234567", ruControlSharePercent: 100 } },
+  report, [], "2026-09-08");
+assert.strictEqual(noType.requirements.find((r) => r.norm.includes("«а»")).status, "no",
+  "без rightholder.holderType подп. «а» не должен закрываться");
+
+// 7. Неприменимые пункты помечаются, а не считаются проваленными.
 const infosecOff = ok.requirements.filter((r) => r.status === "n/a").map((r) => r.norm);
 assert.ok(infosecOff.some((n) => n.includes("«д»")), "подп. «д» должен быть неприменим для не-СЗИ");
 

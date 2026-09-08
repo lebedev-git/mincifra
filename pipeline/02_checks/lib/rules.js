@@ -38,6 +38,20 @@ const FOREIGN_DOMAINS = [
   { host: "docker.io", kind: "Реестр образов", tag: "Docker Hub" },
   { host: "ghcr.io", kind: "Реестр образов", tag: "GitHub CR" },
   { host: "registry.npmjs.org", kind: "Реестр пакетов", tag: "npm" },
+  // Зарубежные ИИ-шлюзы. Частый стоп-фактор: продукт «российский», но каждый
+  // запрос пользователя уходит на обработку за рубеж.
+  { host: "openrouter.ai", kind: "ИИ-шлюз", tag: "OpenRouter" },
+  { host: "api.openai.com", kind: "ИИ-шлюз", tag: "OpenAI" },
+  { host: "api.anthropic.com", kind: "ИИ-шлюз", tag: "Anthropic" },
+  { host: "generativelanguage.googleapis.com", kind: "ИИ-шлюз", tag: "Google Gemini" },
+  { host: "api.mistral.ai", kind: "ИИ-шлюз", tag: "Mistral" },
+  { host: "api.deepseek.com", kind: "ИИ-шлюз", tag: "DeepSeek" },
+  { host: "huggingface.co", kind: "ИИ-модели", tag: "Hugging Face" },
+  // Мессенджеры и edge-платформы, через которые уходит управление продуктом
+  { host: "api.telegram.org", kind: "Мессенджер API", tag: "Telegram Bot API" },
+  { host: "workers.dev", kind: "Edge-функции", tag: "Cloudflare Workers" },
+  { host: "vercel.app", kind: "Хостинг", tag: "Vercel" },
+  { host: "netlify.app", kind: "Хостинг", tag: "Netlify" },
   // VCS / карты / платежи (иностранные)
   { host: "gitlab.com", kind: "VCS", tag: "GitLab.com" },
   { host: "github.com", kind: "VCS", tag: "GitHub" },

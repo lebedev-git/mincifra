@@ -133,9 +133,11 @@ function evalRecordFields(ctx, today) {
     .filter((f) => f.path)
     .map((f) => {
       const since = f.since || null;
-      const base = { id: f.norm, norm: f.norm, title: f.text, text: f.text, note: null, evidence: [], since };
+      const base = { id: f.norm, norm: f.norm, title: f.text, text: f.text, note: f.note || null, evidence: [], since };
       if (since && !inForce(since, today)) return { ...base, status: "pending", reason: `вступает в силу ${since}` };
-      const filled = notEmpty(get(ctx.product, f.path));
+      // У поля может быть либо простой путь, либо правило — когда значение лежит
+      // в разных местах карточки в зависимости от типа правообладателя.
+      const filled = f.test ? evalRule(f.test, ctx) : notEmpty(get(ctx.product, f.path));
       if (!filled && f.optional) return { ...base, status: "n/a", reason: "сведения указываются при наличии" };
       return { ...base, status: filled ? "ok" : "no" };
     });

@@ -85,9 +85,15 @@ function run(product) {
         : "ИНН должен содержать 10 цифр (юрлицо) или 12 цифр (физлицо/ИП)" });
   }
 
+  // Правообладателем по ПП № 1236 п. 5 подп. «а» может быть и гражданин РФ.
+  // У него нет ни ОГРН, ни доли участия — эти поля к нему просто не относятся.
+  const isCitizen = String(rh.holderType || "") === "citizen";
+
   // ОГРН
   const ogrn = rh.ogrn != null ? String(rh.ogrn).trim() : "";
-  if (!ogrn) {
+  if (isCitizen && !ogrn) {
+    // ничего: у физлица ОГРН нет
+  } else if (!ogrn) {
     findings.push({ severity: "SKIP", field: "rightholder.ogrn", note: "не заполнен" });
   } else if (!ogrnAnyValid(ogrn)) {
     findings.push({ severity: "FAIL", field: "rightholder.ogrn",
@@ -96,9 +102,21 @@ function run(product) {
         : "ОГРН — 13 цифр (юрлицо) или ОГРНИП — 15 цифр (ИП)" });
   }
 
+  // Гражданство — для правообладателя-физлица это и есть критерий подп. «а».
+  if (isCitizen && String(rh.citizenship || "").toUpperCase() !== "RU") {
+    findings.push({ severity: "FAIL", field: "rightholder.citizenship",
+      note: "правообладатель-физлицо должен быть гражданином РФ (п. 5 подп. «а»)" });
+  }
+  if (isCitizen && !/^\d{12}$/.test(inn)) {
+    findings.push({ severity: "WARN", field: "rightholder.inn",
+      note: "у физлица ИНН — 12 цифр (п. 4 подп. «е»: ИНН обязателен для гражданина РФ)" });
+  }
+
   // Доля РФ-контроля
   const share = rh.ruControlSharePercent;
-  if (share == null || share === "") {
+  if (isCitizen) {
+    // ничего: доля участия применима только к организации
+  } else if (share == null || share === "") {
     findings.push({ severity: "SKIP", field: "rightholder.ruControlSharePercent", note: "не заполнена" });
   } else {
     const v = Number(share);
