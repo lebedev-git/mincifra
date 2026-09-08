@@ -35,7 +35,10 @@ async function runAllChecks(product, baseDir, opts = {}) {
   if (opts.live) results.push(await pageCheck.runLive(product));
   const totals = { PASS: 0, WARN: 0, FAIL: 0, SKIP: 0 };
   results.forEach((r) => { totals[r.status] = (totals[r.status] || 0) + 1; });
-  const overall = totals.FAIL > 0 ? "FAIL" : totals.WARN > 0 ? "WARN" : "PASS";
+  // SKIP — это «проверку нечем прогнать», а не «претензий нет». Пропущенная
+  // проверка не должна давать зелёный итог: именно license_scan и network_audit
+  // ловят стоп-факторы, и без SBOM/HAR они молчат. Поэтому SKIP тянет итог в WARN.
+  const overall = totals.FAIL > 0 ? "FAIL" : (totals.WARN > 0 || totals.SKIP > 0) ? "WARN" : "PASS";
   return { results, totals, overall };
 }
 
@@ -44,12 +47,15 @@ function findingObject(f) {
   return f.host || f.component || f.metric || f.field || "";
 }
 
-function overallHint(overall) {
-  return overall === "FAIL"
-    ? "Есть блокеры. На портал не подавать до устранения FAIL."
-    : overall === "WARN"
-    ? "Блокеров нет, но есть замечания (WARN/SKIP) — закрыть перед подачей."
-    : "Технических блокеров не выявлено. Сверьте оставшиеся ручные пункты G2/G3.";
+function overallHint(overall, totals) {
+  const skipped = totals && totals.SKIP ? totals.SKIP : 0;
+  if (overall === "FAIL") return "Есть блокеры. На портал не подавать до устранения FAIL.";
+  if (overall === "WARN") {
+    return skipped
+      ? `Не выполнено проверок: ${skipped} (нет входных данных — SBOM/HAR). Итог неполный: пропущенные проверки как раз и ловят стоп-факторы.`
+      : "Блокеров нет, но есть замечания (WARN) — закрыть перед подачей.";
+  }
+  return "Все проверки выполнены, технических блокеров не выявлено.";
 }
 
 function buildMarkdownReport({ results, totals, overall }, product, opts = {}) {

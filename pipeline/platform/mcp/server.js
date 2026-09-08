@@ -217,13 +217,28 @@ const TOOLS = [
   },
   {
     name: "get_checklist",
-    description: "Чек-лист-проекция: 5 стадий, какие пункты закрыты/открыты, nextStageId. Пункты закрываются САМИ из данных.",
+    description: "Чек-лист-проекция маршрута: стадии, какие пункты закрыты/открыты, nextStageId. Пункты закрываются САМИ из данных.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"], additionalProperties: false,
     },
     run: async (a) => checklistDigest((await httpJson("GET", `/api/products/${encodeURIComponent(a.id)}/tracker`)).tracker),
+  },
+  {
+    name: "check_compliance",
+    description:
+      "Построчная сверка продукта с ПП РФ № 1236: по каждому пункту акта — норма, дословный текст требования, " +
+      "статус (ok / no / n/a / pending) и чем подтверждается. Разделы: requirements (п. 5, требования к ПО), " +
+      "recordFields (п. 4, сведения реестровой записи), attachments (п. 11, приложения к заявлению). " +
+      "canDeclareCompliance показывает, можно ли подписывать декларацию по п. 10 подп. «г». " +
+      "Источник требований — выписка 99_reference/pp1236.json, а не память модели.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"], additionalProperties: false,
+    },
+    run: async (a) => (await httpJson("GET", `/api/products/${encodeURIComponent(a.id)}/compliance`)).compliance,
   },
   {
     name: "patch_product",

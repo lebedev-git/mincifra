@@ -306,7 +306,8 @@ function classesReference(ref) {
   const rows = ref.classes.map((c) => el("tr", {}, [
     el("td", { class: "mono", style: "width:1%;white-space:nowrap" }, c.code),
     el("td", {}, c.name),
-    el("td", { style: "width:1%;white-space:nowrap" }, c.pp325 ? "⚠️ ПП№325" : ""),
+    el("td", { style: "width:1%;white-space:nowrap" },
+      c.trustedOsSince ? `2 доверенные ОС с ${c.trustedOsSince}` : ""),
   ]));
   return help("📚 Классификатор ПО — официальные классы (СВЕРИТЬ подкласс)", [
     el("div", { class: "muted", style: "margin-bottom:6px", html:
@@ -327,8 +328,7 @@ function classesReference(ref) {
 function classMultiPicker(pathStr, list, curArr, getContextText) {
   const wrap = el("div", { class: "multi classmulti", "data-path": pathStr, "data-multi": "1" });
   const chips = el("div", { class: "chips" });
-  const pp325Note = el("div", { class: "muted", style: "font-size:12px;margin-top:4px;display:none" },
-    "⚠️ Для выбранного класса в принципе действуют доптребования ПП №325 (к ОС/СУБД/офисному ПО) — сверьте точный состав на reestr.digital.gov.ru перед подачей.");
+  const trustedOsNote = el("div", { class: "muted", style: "font-size:12px;margin-top:4px;display:none" });
   const selected = curArr.slice();
 
   function hiddenBox(code) {
@@ -351,13 +351,21 @@ function classMultiPicker(pathStr, list, curArr, getContextText) {
       wrap.append(hiddenBox(code));
     });
     if (!selected.length) chips.append(el("span", { class: "muted" }, "классы не выбраны"));
-    // ПП№325 — применимо, если хотя бы один выбранный код относится к классу с pp325=true
-    // (сверяем по верхнеуровневому коду, т.к. справочник хранит только его).
-    const applies = selected.some((code) => {
-      const top = list.find((c) => code.startsWith(c.code));
-      return top && top.pp325;
-    });
-    pp325Note.style.display = applies ? "" : "none";
+    // Требование о двух доверенных ОС (ПП № 1236 п. 5 подп. «м») вводится волнами
+    // по категориям ПО. Показываем ближайшую дату среди выбранных классов.
+    const dates = selected
+      .map((code) => (list.find((c) => code.startsWith(c.code)) || {}).trustedOsSince)
+      .filter(Boolean)
+      .sort();
+    if (dates.length) {
+      trustedOsNote.textContent =
+        `ПП № 1236 п. 5 подп. «м»: с ${dates[0]} для этого класса обязательна совместимость ` +
+        "не менее чем с 2 операционными системами, соответствующими требованиям к доверенному ПО. " +
+        "Перечень доверенных ОС сверьте в ФГИС «Реестр ПО».";
+      trustedOsNote.style.display = "";
+    } else {
+      trustedOsNote.style.display = "none";
+    }
   }
   function add(code) {
     const v = (code || "").trim();
@@ -377,7 +385,7 @@ function classMultiPicker(pathStr, list, curArr, getContextText) {
 
   wrap.append(
     chips,
-    pp325Note,
+    trustedOsNote,
     el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:6px" }, [sel, addBtn]),
     el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:4px" }, [subInp, addSubBtn]),
   );
@@ -398,7 +406,7 @@ function classMultiPicker(pathStr, list, curArr, getContextText) {
         suggestMsg.append("Кандидаты: ");
         suggestions.forEach((s) => {
           suggestMsg.append(el("a", { href: "#", style: "margin-right:10px", onclick: (e) => { e.preventDefault(); add(s.code); } },
-            `${s.code} — ${s.name}${s.pp325 ? " ⚠️ПП№325" : ""}`));
+            `${s.code} — ${s.name}${s.trustedOsSince ? ` (2 доверенные ОС с ${s.trustedOsSince})` : ""}`));
         });
       } catch (e) { suggestMsg.textContent = "Ошибка: " + (e.message || e); }
     }
@@ -549,7 +557,6 @@ async function viewProduct(id, stage) {
     ["rights.rospatentCertificateDate", "Дата свидетельства (ГГГГ-ММ-ДД)", "text", null, "card"],
     ["rights.chainOfTitleComplete", "Цепочка прав оформлена (договоры, задания, акты)", "bool", null, "card"],
     ["rights.authors", "Авторы (ФИО через запятую)", "list", "для реферата и цепочки прав", "card"],
-    ["compliance.pp325Checked", "Доптребования ПП № 325 сверены", "bool", "если применимо к классу", "card"],
     ["finance.annualRevenueProduct", "Выручка по продукту за год", "number", null, "card"],
     ["finance.annualForeignPayments", "Выплаты иностранцам за год", "number", null, "card"],
     // --- стадия «Продукт» ---

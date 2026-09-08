@@ -61,7 +61,7 @@ async function main() {
   console.log("");
   console.log(`ИТОГ: ${STATUS_ICON[overall]} ${overall}  ` +
     `(PASS ${totals.PASS} · WARN ${totals.WARN} · FAIL ${totals.FAIL} · SKIP ${totals.SKIP})`);
-  console.log(`→ ${overallHint(overall)}`);
+  console.log(`→ ${overallHint(overall, totals)}`);
   console.log("");
 
   // --- Markdown-отчёт ---

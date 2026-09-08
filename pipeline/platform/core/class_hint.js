@@ -17,8 +17,10 @@ function loadClasses() {
   return _cache;
 }
 
-// Возвращает до `limit` кандидатов { code, name, score, pp325 }, отсортированных
-// по числу совпавших ключевых слов (score > 0 — иначе класс не попадает в список).
+// Возвращает до `limit` кандидатов { code, name, score, trustedOsSince },
+// отсортированных по числу совпавших ключевых слов (score > 0 — иначе класс не
+// попадает в список). trustedOsSince — дата, с которой к классу применяется
+// требование двух доверенных ОС (ПП № 1236 п. 5 подп. «м»).
 function suggestClasses(text, limit = 3) {
   const t = String(text || "").toLowerCase();
   if (!t.trim()) return [];
@@ -27,7 +29,7 @@ function suggestClasses(text, limit = 3) {
   const scored = classes
     .map((c) => {
       const score = (c.keywords || []).reduce((n, kw) => n + (t.includes(kw.toLowerCase()) ? 1 : 0), 0);
-      return { code: c.code, name: c.name, pp325: !!c.pp325, score };
+      return { code: c.code, name: c.name, trustedOsSince: c.trustedOsSince || null, score };
     })
     .filter((c) => c.score > 0)
     .sort((a, b) => b.score - a.score);
@@ -35,14 +37,20 @@ function suggestClasses(text, limit = 3) {
   return scored.slice(0, limit);
 }
 
-// Применимы ли доптребования ПП №325 хотя бы к одному из выбранных кодов класса.
-// codes — массив вида product.class (["04", "06.03", ...]); сверяем по префиксу
+// С какой даты к продукту применяется требование о двух доверенных ОС.
+// codes — массив вида product.class (["04.09", "06.03", ...]); сверяем по префиксу
 // верхнеуровневого кода (первые 2 цифры), т.к. справочник хранит только их.
-function pp325AppliesTo(codes) {
-  if (!Array.isArray(codes) || !codes.length) return false;
+// Если класс попадает в несколько волн, действует САМАЯ РАННЯЯ дата.
+// null — класс в волнах акта не упомянут (напр. встроенное ПО).
+function trustedOsSince(codes) {
+  if (!Array.isArray(codes) || !codes.length) return null;
   const { classes } = loadClasses();
-  const flagged = new Set(classes.filter((c) => c.pp325).map((c) => c.code));
-  return codes.some((code) => flagged.has(String(code).slice(0, 2)));
+  const byCode = new Map(classes.map((c) => [c.code, c.trustedOsSince || null]));
+  const dates = codes
+    .map((code) => byCode.get(String(code).slice(0, 2)))
+    .filter(Boolean)
+    .sort();
+  return dates[0] || null;
 }
 
-module.exports = { suggestClasses, pp325AppliesTo, loadClasses };
+module.exports = { suggestClasses, trustedOsSince, loadClasses };
